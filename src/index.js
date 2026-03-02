@@ -1,10 +1,10 @@
 /**
- * barebrowse — Authenticated web browsing for autonomous agents via CDP.
+ * swiftbrowse — Authenticated web browsing for autonomous agents via CDP.
  *
  * One package. One import. Three modes.
  *
  * Usage:
- *   import { browse, connect } from 'barebrowse';
+ *   import { browse, connect } from 'swiftbrowse';
  *   const snapshot = await browse('https://example.com');
  */
 
@@ -30,7 +30,38 @@ import { applyStealth } from './stealth.js';
  * @param {number} [opts.port] - CDP port for headed mode
  * @returns {Promise<string>} ARIA snapshot text
  */
+/**
+ * Validate that a URL uses only http:, https:, or data: schemes.
+ * Blocks file://, javascript:, blob:, and other dangerous schemes.
+ * @param {string} url
+ * @returns {string} The validated URL
+ * @throws {Error} If the URL is invalid or uses a disallowed scheme
+ */
+function validateUrl(url) {
+  if (typeof url !== 'string' || !url.trim()) {
+    throw new Error('URL must be a non-empty string');
+  }
+  // Auto-prepend https:// when no scheme is given (e.g. "apple.com" → "https://apple.com")
+  // Match any scheme: letter followed by alphanumeric/+/-/. and then colon
+  if (!/^[a-zA-Z][a-zA-Z0-9+\-.]*:/.test(url)) {
+    url = `https://${url}`;
+  }
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`Invalid URL: "${url}"`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:' && parsed.protocol !== 'data:') {
+    throw new Error(
+      `URL scheme "${parsed.protocol}" is not allowed. Only http:, https:, and data: are permitted.`
+    );
+  }
+  return url;
+}
+
 export async function browse(url, opts = {}) {
+  url = validateUrl(url);
   const mode = opts.mode || 'headless';
   const timeout = opts.timeout || 30000;
 
@@ -141,6 +172,11 @@ export async function connect(opts = {}) {
   let page = await createPage(cdp, mode !== 'headed', { viewport: opts.viewport });
   let refMap = new Map();
 
+  // Compute scroll center from configured viewport (fall back to 1280×800 default)
+  const [vpW = 1280, vpH = 800] = (opts.viewport || '').split('x').map(Number);
+  const scrollCenterX = Math.floor(vpW / 2);
+  const scrollCenterY = Math.floor(vpH / 2);
+
   // Suppress permission prompts for all modes
   await suppressPermissions(cdp);
 
@@ -156,9 +192,11 @@ export async function connect(opts = {}) {
   }
 
   // Auto-dismiss JS dialogs (alert, confirm, prompt)
+  const MAX_DIALOG_LOG = 1000;
   const dialogLog = [];
   function setupDialogHandler(session) {
     session.on('Page.javascriptDialogOpening', async (params) => {
+      if (dialogLog.length >= MAX_DIALOG_LOG) dialogLog.shift();
       dialogLog.push({
         type: params.type,
         message: params.message,
@@ -174,6 +212,9 @@ export async function connect(opts = {}) {
 
   return {
     async goto(url, timeout = 30000) {
+      url = validateUrl(url);
+      // Clear stale refs — they're invalid after navigation
+      refMap = new Map();
       await navigate(page, url, timeout);
       if (opts.consent !== false) {
         await dismissConsent(page.session);
@@ -243,7 +284,7 @@ export async function connect(opts = {}) {
     },
 
     async scroll(deltaY) {
-      await cdpScroll(page.session, deltaY);
+      await cdpScroll(page.session, deltaY, scrollCenterX, scrollCenterY);
     },
 
     async press(key) {
@@ -323,6 +364,108 @@ export async function connect(opts = {}) {
       throw new Error(`waitFor timed out after ${timeout}ms`);
     },
 
+    /**
+     * Extract all visible text from the current page.
+     * Uses document.body.innerText — identical to what a human reader sees,
+     * respects CSS visibility, and is completely undetectable by anti-bot systems.
+     * @param {object} [opts]
+     * @param {number} [opts.maxChars] - Truncate output to this many chars
+     * @returns {Promise<string>} Cleaned plain text
+     */
+    async text(opts = {}) {
+      const { result } = await page.session.send('Runtime.evaluate', {
+        expression: `(() => {
+          // Prefer <main> / [role="main"] / <article> — skips nav/header/footer automatically
+          const main = document.querySelector('main, [role="main"], article');
+          if (main) return main.innerText;
+          // Fallback: clone body and strip noise elements before reading text
+          const clone = document.body.cloneNode(true);
+          clone.querySelectorAll(
+            'nav, header, footer, aside, ' +
+            '[role="navigation"], [role="banner"], [role="contentinfo"], [role="complementary"], ' +
+            'script, style, noscript'
+          ).forEach(el => el.remove());
+          return clone.textContent;
+        })()`,
+        returnByValue: true,
+      });
+      let content = result?.value || '';
+      // Normalise whitespace: collapse runs of spaces/tabs, collapse 3+ newlines to 2
+      content = content
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+      if (opts.maxChars && content.length > opts.maxChars) {
+        content = content.slice(0, opts.maxChars)
+          + `\n\n[...${content.length - opts.maxChars} more chars truncated]`;
+      }
+      return content;
+    },
+
+    /**
+     * Extract text or an attribute from elements matching a CSS selector.
+     * @param {string} selector - CSS selector
+     * @param {object} [opts]
+     * @param {boolean} [opts.all=false] - Return all matches (array) instead of first
+     * @param {string} [opts.attr='innerText'] - Property or attribute to read
+     * @returns {Promise<string|string[]|null>} Extracted value(s)
+     */
+    async extract(selector, opts = {}) {
+      const all = opts.all || false;
+      const attr = JSON.stringify(opts.attr || 'innerText');
+      const sel = JSON.stringify(selector);
+      const expression = all
+        ? `Array.from(document.querySelectorAll(${sel})).map(el => el[${attr}] != null ? el[${attr}] : el.getAttribute(${attr}))`
+        : `(el => el ? (el[${attr}] != null ? el[${attr}] : el.getAttribute(${attr})) : null)(document.querySelector(${sel}))`;
+      const { result } = await page.session.send('Runtime.evaluate', {
+        expression,
+        returnByValue: true,
+      });
+      return result?.value ?? null;
+    },
+
+    /**
+     * Extract all hyperlinks from the current page.
+     * @returns {Promise<Array<{href: string, text: string}>>}
+     */
+    /**
+     * Extract an HTML table as structured JSON.
+     * @param {string} [selector='table'] - CSS selector for the table element
+     * @returns {Promise<{headers: string[], rows: string[][]}|null>} Parsed table or null if not found
+     */
+    async table(selector = 'table') {
+      const { result } = await page.session.send('Runtime.evaluate', {
+        expression: `(sel => {
+          const tbl = document.querySelector(sel);
+          if (!tbl) return null;
+          const headerCells = Array.from(tbl.querySelectorAll('thead th, thead td'));
+          let headers = headerCells.map(c => c.innerText.trim());
+          const allRows = Array.from(tbl.rows);
+          const bodyRows = headers.length
+            ? allRows.filter(r => !r.closest('thead'))
+            : allRows.slice(1);
+          if (!headers.length && allRows.length > 0) {
+            headers = Array.from(allRows[0].cells).map(c => c.innerText.trim());
+          }
+          const rows = bodyRows.map(r => Array.from(r.cells).map(c => c.innerText.trim()));
+          return { headers, rows };
+        })(${JSON.stringify(selector)})`,
+        returnByValue: true,
+      });
+      return result?.value ?? null;
+    },
+
+    async links() {
+      const { result } = await page.session.send('Runtime.evaluate', {
+        expression: `Array.from(document.querySelectorAll('a[href]')).map(a => ({
+          href: a.href,
+          text: (a.innerText || a.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' ')
+        })).filter(l => l.href && !l.href.startsWith('javascript:') && !l.href.startsWith('data:'))`,
+        returnByValue: true,
+      });
+      return result?.value ?? [];
+    },
+
     async saveState(filePath) {
       const { cookies } = await page.session.send('Network.getAllCookies');
       const { result } = await page.session.send('Runtime.evaluate', {
@@ -341,6 +484,24 @@ export async function connect(opts = {}) {
       const params = { format };
       if (format === 'jpeg' || format === 'webp') {
         params.quality = screenshotOpts.quality || 80;
+      }
+      if (screenshotOpts.selector) {
+        // Resolve the element to a viewport box and clip the screenshot to it
+        const { result: evalResult } = await page.session.send('Runtime.evaluate', {
+          expression: `document.querySelector(${JSON.stringify(screenshotOpts.selector)})`,
+        });
+        if (evalResult.objectId) {
+          const { node } = await page.session.send('DOM.describeNode', {
+            objectId: evalResult.objectId,
+          });
+          const { model } = await page.session.send('DOM.getBoxModel', {
+            backendNodeId: node.backendNodeId,
+          });
+          if (model) {
+            const b = model.border; // quad: [x0,y0, x1,y1, x2,y2, x3,y3]
+            params.clip = { x: b[0], y: b[1], width: model.width, height: model.height, scale: 1 };
+          }
+        }
       }
       const { data } = await page.session.send('Page.captureScreenshot', params);
       return data;
@@ -366,9 +527,12 @@ export async function connect(opts = {}) {
     cdp: page.session,
 
     async close() {
-      await cdp.send('Target.closeTarget', { targetId: page.targetId });
-      cdp.close();
-      if (browser) browser.process.kill();
+      try {
+        await cdp.send('Target.closeTarget', { targetId: page.targetId });
+      } finally {
+        cdp.close();
+        if (browser) browser.process.kill();
+      }
     },
   };
 }
@@ -437,11 +601,18 @@ async function createPage(cdp, stealth = false, pageOpts = {}) {
 
 /**
  * Navigate to a URL and wait for the page to load.
+ * On timeout, falls through gracefully rather than hard-failing —
+ * SPAs often don't fire loadEventFired after pushState navigations.
  */
 async function navigate(page, url, timeout = 30000) {
   const loadPromise = page.session.once('Page.loadEventFired', timeout);
   await page.session.send('Page.navigate', { url });
-  await loadPromise;
+  try {
+    await loadPromise;
+  } catch (err) {
+    if (!err.message.includes('Timeout')) throw err;
+    // Timed out waiting for load — common with SPAs. Settle and continue.
+  }
   // Brief settle time for dynamic content
   await new Promise((r) => setTimeout(r, 500));
 }
@@ -498,6 +669,8 @@ function buildTree(nodes) {
         parent.children.push(treeNode);
         linked.add(node.nodeId);
       }
+      // Orphaned nodes (parentId points to unknown node) are silently dropped —
+      // they have no valid position in the tree.
     } else if (!node.parentId && !root) {
       root = treeNode;
     }
@@ -560,20 +733,22 @@ function waitForNetworkIdle(session, opts = {}) {
 
 /**
  * Detect if a page is a bot-challenge page (Cloudflare, etc.).
- * Heuristic: very short ARIA tree + known challenge phrases.
+ * Requires BOTH a short ARIA tree AND a known challenge phrase to avoid
+ * false positives on legitimate pages that mention "please wait" or similar.
  */
 function isChallengePage(tree) {
   if (!tree) return true;
   const text = flattenTreeText(tree);
+  // Short tree heuristic: challenge pages are sparse
+  if (text.length > 500) return false;
   const challengePhrases = [
     'just a moment',
     'checking if the site connection is secure',
     'checking your browser',
-    'please wait',
     'verify you are human',
     'prove your humanity',
     'attention required',
-    'file a ticket',
+    'enable javascript and cookies to continue',
   ];
   const lower = text.toLowerCase();
   return challengePhrases.some((p) => lower.includes(p));

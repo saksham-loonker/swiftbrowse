@@ -72,7 +72,9 @@ export async function type(session, backendNodeId, text, opts = {}) {
   await session.send('DOM.focus', { backendNodeId });
 
   if (opts.clear) {
-    // Select all (Ctrl+A) then delete
+    // Ctrl+A selects all in <input>/<textarea>; also works in most contenteditables.
+    // Follow with Delete (not just Backspace) to handle contenteditable divs where
+    // Backspace may collapse the selection differently.
     await session.send('Input.dispatchKeyEvent', {
       type: 'keyDown', key: 'a', code: 'KeyA',
       windowsVirtualKeyCode: 65, modifiers: 2, // 2 = Ctrl
@@ -82,12 +84,12 @@ export async function type(session, backendNodeId, text, opts = {}) {
       windowsVirtualKeyCode: 65, modifiers: 2,
     });
     await session.send('Input.dispatchKeyEvent', {
-      type: 'keyDown', key: 'Backspace', code: 'Backspace',
-      windowsVirtualKeyCode: 8,
+      type: 'keyDown', key: 'Delete', code: 'Delete',
+      windowsVirtualKeyCode: 46,
     });
     await session.send('Input.dispatchKeyEvent', {
-      type: 'keyUp', key: 'Backspace', code: 'Backspace',
-      windowsVirtualKeyCode: 8,
+      type: 'keyUp', key: 'Delete', code: 'Delete',
+      windowsVirtualKeyCode: 46,
     });
   }
 
@@ -123,10 +125,10 @@ export async function press(session, key) {
  *
  * @param {object} session - Session-scoped CDP handle
  * @param {number} deltaY - Pixels to scroll (positive = down, negative = up)
- * @param {number} [x=400] - X coordinate for scroll event
- * @param {number} [y=300] - Y coordinate for scroll event
+ * @param {number} [x=640] - X coordinate for scroll event (half of default 1280-wide viewport)
+ * @param {number} [y=400] - Y coordinate for scroll event (half of default 800-tall viewport)
  */
-export async function scroll(session, deltaY, x = 400, y = 300) {
+export async function scroll(session, deltaY, x = 640, y = 400) {
   await session.send('Input.dispatchMouseEvent', {
     type: 'mouseWheel', x, y, deltaX: 0, deltaY,
   });
@@ -169,7 +171,7 @@ export async function select(session, backendNodeId, value) {
 
   if (tagResult.value === 'SELECT') {
     // Native select: set value + dispatch change
-    await session.send('Runtime.callFunctionOn', {
+    const { result: selectResult } = await session.send('Runtime.callFunctionOn', {
       objectId: object.objectId,
       functionDeclaration: `function(v) {
         // Try by value first, then by visible text
@@ -184,6 +186,9 @@ export async function select(session, backendNodeId, value) {
       arguments: [{ value }],
       returnByValue: true,
     });
+    if (!selectResult.value) {
+      throw new Error(`Option "${value}" not found in <select> element`);
+    }
     return;
   }
 
@@ -194,7 +199,7 @@ export async function select(session, backendNodeId, value) {
   // Search for a matching option in the ARIA tree
   const { result: found } = await session.send('Runtime.evaluate', {
     expression: `(() => {
-      const options = document.querySelectorAll('[role="option"], [role="menuitem"], li[role="option"]');
+      const options = document.querySelectorAll('[role="option"], [role="menuitem"], [role="listbox"] li, li[role="option"]');
       for (const opt of options) {
         if (opt.textContent.trim() === ${JSON.stringify(value)}) {
           opt.click();
@@ -205,6 +210,9 @@ export async function select(session, backendNodeId, value) {
     })()`,
     returnByValue: true,
   });
+  if (found && !found.value) {
+    throw new Error(`Option "${value}" not found in custom dropdown`);
+  }
 }
 
 /**
@@ -234,11 +242,24 @@ export async function drag(session, fromNodeId, toNodeId) {
 
 /**
  * Upload files to a file input element.
+ * Validates that every file path exists before sending to CDP.
  *
  * @param {object} session - Session-scoped CDP handle
  * @param {number} backendNodeId - Backend DOM node ID of the file input
  * @param {string[]} files - Absolute paths to files to upload
  */
 export async function upload(session, backendNodeId, files) {
+  if (!Array.isArray(files) || files.length === 0) {
+    throw new Error('upload: files must be a non-empty array of file paths');
+  }
+  const { existsSync } = await import('node:fs');
+  for (const f of files) {
+    if (typeof f !== 'string' || !f.trim()) {
+      throw new Error(`upload: each file path must be a non-empty string, got: ${JSON.stringify(f)}`);
+    }
+    if (!existsSync(f)) {
+      throw new Error(`upload: file not found: ${f}`);
+    }
+  }
   await session.send('DOM.setFileInputFiles', { files, backendNodeId });
 }

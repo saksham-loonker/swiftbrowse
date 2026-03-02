@@ -40,15 +40,20 @@ export async function startDaemon(opts, outputDir, initialUrl) {
   if (opts.viewport) args.push('--viewport', opts.viewport);
   if (opts.storageState) args.push('--storage-state', opts.storageState);
 
+  // Write daemon stdout/stderr to a log file so pipes don't block on Windows
+  const logPath = join(absDir, 'daemon.log');
+  const { openSync } = await import('node:fs');
+  const logFd = openSync(logPath, 'w');
+
   const child = spawn(process.execPath, args, {
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', logFd, logFd],
     env: { ...process.env },
   });
   child.unref();
 
-  // Poll for session.json (50ms interval, 15s timeout)
-  const deadline = Date.now() + 15000;
+  // Poll for session.json (50ms interval, 30s timeout)
+  const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     if (existsSync(sessionPath)) {
       try {
@@ -58,7 +63,12 @@ export async function startDaemon(opts, outputDir, initialUrl) {
     }
     await new Promise((r) => setTimeout(r, 50));
   }
-  throw new Error('Daemon failed to start within 15s');
+
+  // Read log for error context
+  let log = '';
+  try { log = readFileSync(logPath, 'utf8').slice(-500); } catch { /* no log */ }
+  const hint = log ? `\nDaemon log:\n${log}` : '';
+  throw new Error(`Daemon failed to start within 30s${hint}`);
 }
 
 /**
@@ -79,10 +89,12 @@ export async function runDaemon(opts, outputDir, initialUrl) {
     storageState: opts.storageState,
   });
 
-  // Console log capture
+  // Console log capture — capped to prevent unbounded memory growth
+  const MAX_LOG_ENTRIES = 10000;
   const consoleLogs = [];
   await page.cdp.send('Runtime.enable');
   page.cdp.on('Runtime.consoleAPICalled', (params) => {
+    if (consoleLogs.length >= MAX_LOG_ENTRIES) consoleLogs.shift();
     consoleLogs.push({
       type: params.type,
       timestamp: new Date().toISOString(),
@@ -95,6 +107,11 @@ export async function runDaemon(opts, outputDir, initialUrl) {
   const pendingRequests = new Map();
 
   page.cdp.on('Network.requestWillBeSent', (params) => {
+    // Cap pendingRequests to avoid memory accumulation from abandoned requests
+    if (pendingRequests.size >= MAX_LOG_ENTRIES) {
+      const firstKey = pendingRequests.keys().next().value;
+      pendingRequests.delete(firstKey);
+    }
     pendingRequests.set(params.requestId, {
       url: params.request.url,
       method: params.request.method,
@@ -105,6 +122,7 @@ export async function runDaemon(opts, outputDir, initialUrl) {
   page.cdp.on('Network.responseReceived', (params) => {
     const req = pendingRequests.get(params.requestId);
     if (req) {
+      if (networkLogs.length >= MAX_LOG_ENTRIES) networkLogs.shift();
       networkLogs.push({
         ...req,
         status: params.response.status,
@@ -118,6 +136,7 @@ export async function runDaemon(opts, outputDir, initialUrl) {
   page.cdp.on('Network.loadingFailed', (params) => {
     const req = pendingRequests.get(params.requestId);
     if (req) {
+      if (networkLogs.length >= MAX_LOG_ENTRIES) networkLogs.shift();
       networkLogs.push({
         ...req,
         status: 0,
@@ -141,6 +160,7 @@ export async function runDaemon(opts, outputDir, initialUrl) {
   // Command handlers
   const handlers = {
     async goto({ url, timeout }) {
+      // page.goto calls validateUrl which auto-prepends https:// if needed
       await page.goto(url, timeout || 30000);
       return { ok: true };
     },
@@ -154,8 +174,16 @@ export async function runDaemon(opts, outputDir, initialUrl) {
       return { ok: true, file };
     },
 
-    async screenshot({ format }) {
-      const data = await page.screenshot({ format: format || 'png' });
+    async text({ maxChars }) {
+      const content = await page.text({ maxChars: maxChars ? Number(maxChars) : undefined });
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const file = join(absDir, `text-${ts}.txt`);
+      writeFileSync(file, content);
+      return { ok: true, file, chars: content.length };
+    },
+
+    async screenshot({ format, selector }) {
+      const data = await page.screenshot({ format: format || 'png', selector: selector || undefined });
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       const ext = format || 'png';
       const file = join(absDir, `screenshot-${ts}.${ext}`);
@@ -248,6 +276,29 @@ export async function runDaemon(opts, outputDir, initialUrl) {
       return { ok: true, file };
     },
 
+    async table({ selector }) {
+      const data = await page.table(selector || 'table');
+      if (!data) return { ok: false, error: `No table found for selector "${selector || 'table'}"` };
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const file = join(absDir, `table-${ts}.json`);
+      writeFileSync(file, JSON.stringify(data, null, 2));
+      return { ok: true, file, rows: data.rows.length, cols: data.headers.length };
+    },
+
+    async extract({ selector, all, attr }) {
+      if (!selector) return { ok: false, error: 'selector is required' };
+      const value = await page.extract(selector, { all: Boolean(all), attr: attr || undefined });
+      return { ok: true, value };
+    },
+
+    async links() {
+      const list = await page.links();
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const file = join(absDir, `links-${ts}.json`);
+      writeFileSync(file, JSON.stringify(list, null, 2));
+      return { ok: true, file, count: list.length };
+    },
+
     async 'dialog-log'() {
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       const file = join(absDir, `dialogs-${ts}.json`);
@@ -324,8 +375,17 @@ export async function runDaemon(opts, outputDir, initialUrl) {
       return;
     }
 
+    // Enforce request body size limit (1 MB) to prevent memory exhaustion
+    const MAX_BODY = 1024 * 1024;
     let body = '';
-    for await (const chunk of req) body += chunk;
+    for await (const chunk of req) {
+      if (body.length + chunk.length > MAX_BODY) {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Request body too large (max 1 MB)' }));
+        return;
+      }
+      body += chunk;
+    }
 
     let parsed;
     try {
@@ -337,15 +397,15 @@ export async function runDaemon(opts, outputDir, initialUrl) {
     }
 
     const { command, args } = parsed;
-    const handler = handlers[command];
-    if (!handler) {
+    // Use Object.hasOwn to prevent prototype pollution (e.g. command = '__proto__')
+    if (typeof command !== 'string' || !Object.hasOwn(handlers, command)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: `Unknown command: ${command}` }));
       return;
     }
 
     try {
-      const result = await handler(args || {});
+      const result = await handlers[command](args || {});
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
 
@@ -376,6 +436,14 @@ export async function runDaemon(opts, outputDir, initialUrl) {
 
   // Handle SIGTERM gracefully
   process.on('SIGTERM', async () => {
+    try { await page.close(); } catch { /* already closed */ }
+    if (existsSync(sessionPath)) unlinkSync(sessionPath);
+    server.close();
+    process.exit(0);
+  });
+
+  // Handle SIGINT (Ctrl+C) — Windows does not send SIGTERM on Ctrl+C
+  process.on('SIGINT', async () => {
     try { await page.close(); } catch { /* already closed */ }
     if (existsSync(sessionPath)) unlinkSync(sessionPath);
     server.close();

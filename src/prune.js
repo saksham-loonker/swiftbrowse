@@ -432,17 +432,19 @@ function hasHeading(node) {
   return node.children?.some((c) => hasHeading(c)) ?? false;
 }
 
-function extractText(node) {
+function extractText(node, depth = 0) {
+  if (depth > 50) return node.name || ''; // guard against deeply nested trees
   let text = node.name || '';
-  for (const child of (node.children || [])) text += ' ' + extractText(child);
+  for (const child of (node.children || [])) text += ' ' + extractText(child, depth + 1);
   return text;
 }
 
-function flatten(nodes) {
+function flatten(nodes, depth = 0) {
+  if (depth > 100) return nodes.slice(); // guard against deeply nested trees
   const result = [];
   for (const n of nodes) {
     result.push(n);
-    if (n.children) result.push(...flatten(n.children));
+    if (n.children) result.push(...flatten(n.children, depth + 1));
   }
   return result;
 }

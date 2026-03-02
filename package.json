@@ -1,15 +1,16 @@
 {
-  "name": "barebrowse",
-  "version": "0.4.6",
+  "name": "swiftbrowse",
+  "version": "0.5.0",
   "description": "Authenticated web browsing for autonomous agents via CDP. URL in, pruned ARIA snapshot out.",
   "type": "module",
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
-    "./bareagent": "./src/bareagent.js"
+    "./swiftagent": "./src/swiftagent.js",
+    "./bareagent": "./src/swiftagent.js"
   },
   "bin": {
-    "barebrowse": "./cli.js"
+    "swiftbrowse": "cli.js"
   },
   "engines": {
     "node": ">=22"

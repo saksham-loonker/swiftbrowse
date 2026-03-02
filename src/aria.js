@@ -27,6 +27,12 @@ export function formatTree(node, depth = 0) {
   const SKIP_ROLES = new Set(['InlineTextBox', 'LineBreak']);
   if (SKIP_ROLES.has(node.role)) return '';
 
+  // _promote is an internal prune.js marker: render children at the same depth
+  // (structural wrapper was unnamed + multi-child — promote its children upward)
+  if (node.role === '_promote') {
+    return node.children.map((c) => formatTree(c, depth)).filter(Boolean).join('\n');
+  }
+
   const indent = '  '.repeat(depth);
   const lines = [];
 

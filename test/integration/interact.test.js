@@ -227,7 +227,7 @@ describe('interact — Google Search', () => {
       }
       assert.ok(searchRef, `should find search box ref. Snapshot start: ${snap.substring(0, 500)}`);
 
-      await page.type(searchRef, 'barebrowse github');
+      await page.type(searchRef, 'swiftbrowse github');
       const navPromise = page.waitForNavigation(15000);
       await page.press('Enter');
       await navPromise;

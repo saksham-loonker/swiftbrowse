@@ -1,10 +1,10 @@
-.claude/memory/
-.claude/stash/
-.claude/settings.local.json
-.claude/projects/
-.git/
-.idea/
+# Runtime output — never publish
+.swiftbrowse/
+
+# Dev tooling
+CLAUDE.md
+.mcp.json
 test/
-examples/
-docs/prd.md
-docs/poc-plan.md
+*.log
+*.tgz
+.claude/

@@ -27,8 +27,8 @@ function cli(args, opts = {}) {
 
 describe('CLI session', () => {
   // Use a temp directory so tests don't pollute the project
-  const tmpDir = mkdtempSync(join(tmpdir(), 'barebrowse-cli-test-'));
-  const sessionDir = join(tmpDir, '.barebrowse');
+  const tmpDir = mkdtempSync(join(tmpdir(), 'swiftbrowse-cli-test-'));
+  const sessionDir = join(tmpDir, '.swiftbrowse');
 
   after(() => {
     // Ensure daemon is dead

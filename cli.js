@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * cli.js -- barebrowse CLI entry point.
+ * cli.js -- swiftbrowse CLI entry point.
  *
- * See `barebrowse` (no args) for full command reference.
+ * See `swiftbrowse` (no args) for full command reference.
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
@@ -33,7 +33,7 @@ if (args.includes('--daemon-internal')) {
 } else if (cmd === 'snapshot') {
   await cmdProxy('snapshot', { mode: parseFlag('--mode') });
 } else if (cmd === 'screenshot') {
-  await cmdProxy('screenshot', { format: parseFlag('--format') });
+  await cmdProxy('screenshot', { format: parseFlag('--format'), selector: parseFlag('--selector') });
 } else if (cmd === 'click' && args[1]) {
   await cmdProxy('click', { ref: args[1] });
 } else if (cmd === 'type' && args[1] && args[2]) {
@@ -76,6 +76,16 @@ if (args.includes('--daemon-internal')) {
   await cmdProxy('save-state');
 } else if (cmd === 'dialog-log') {
   await cmdProxy('dialog-log');
+} else if (cmd === 'text') {
+  await cmdProxy('text', { maxChars: parseFlag('--max-chars') });
+} else if (cmd === 'extract' && args[1]) {
+  await cmdProxy('extract', { selector: args[1], all: hasFlag('--all'), attr: parseFlag('--attr') });
+} else if (cmd === 'links') {
+  await cmdProxy('links');
+} else if (cmd === 'table') {
+  await cmdProxy('table', { selector: args[1] || undefined });
+} else if (cmd === 'browse-batch') {
+  await cmdBrowseBatch();
 } else {
   printUsage();
 }
@@ -86,11 +96,11 @@ if (args.includes('--daemon-internal')) {
 async function cmdOpen() {
   const { startDaemon } = await import('./src/daemon.js');
   const { isAlive } = await import('./src/session-client.js');
-  const outputDir = resolve('.barebrowse');
+  const outputDir = resolve('.swiftbrowse');
 
   // Check for existing session
   if (await isAlive(outputDir)) {
-    process.stdout.write('Session already running. Use `barebrowse close` first.\n');
+    process.stdout.write('Session already running. Use `swiftbrowse close` first.\n');
     process.exit(1);
   }
 
@@ -121,7 +131,7 @@ async function cmdOpen() {
 
 async function cmdStatus() {
   const { readSession, isAlive } = await import('./src/session-client.js');
-  const outputDir = resolve('.barebrowse');
+  const outputDir = resolve('.swiftbrowse');
   const session = readSession(outputDir);
 
   if (!session) {
@@ -133,7 +143,7 @@ async function cmdStatus() {
   if (alive) {
     process.stdout.write(`Session running (pid ${session.pid}, port ${session.port}, started ${session.startedAt})\n`);
   } else {
-    process.stdout.write(`Session stale (pid ${session.pid} not responding). Run \`barebrowse close\` to clean up.\n`);
+    process.stdout.write(`Session stale (pid ${session.pid} not responding). Run \`swiftbrowse close\` to clean up.\n`);
     process.exit(1);
   }
 }
@@ -141,7 +151,7 @@ async function cmdStatus() {
 async function cmdProxy(command, cmdArgs) {
   const { sendCommand, readSession } = await import('./src/session-client.js');
   const { unlinkSync } = await import('node:fs');
-  const outputDir = resolve('.barebrowse');
+  const outputDir = resolve('.swiftbrowse');
 
   try {
     const result = await sendCommand(command, cmdArgs, outputDir);
@@ -154,6 +164,8 @@ async function cmdProxy(command, cmdArgs) {
     // Print result
     if (result.file && result.count !== undefined) {
       process.stdout.write(`${result.file} (${result.count} entries)\n`);
+    } else if (result.file && result.chars !== undefined) {
+      process.stdout.write(`${result.file} (${result.chars.toLocaleString()} chars)\n`);
     } else if (result.file) {
       process.stdout.write(`${result.file}\n`);
     } else if (result.value !== undefined) {
@@ -193,6 +205,42 @@ async function oneShot() {
   }
 }
 
+async function cmdBrowseBatch() {
+  const { browse } = await import('./src/index.js');
+
+  // Collect URLs from positional args and/or --file=urls.txt
+  let urls = args.slice(1).filter((a) => !a.startsWith('--'));
+  const filePath = parseFlag('--file');
+  if (filePath) {
+    const lines = readFileSync(filePath, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean);
+    urls.push(...lines);
+  }
+
+  if (urls.length === 0) {
+    process.stderr.write('Error: no URLs provided\nUsage: swiftbrowse browse-batch url1 url2 ... [--file=urls.txt]\n');
+    process.exit(1);
+  }
+
+  const outputDir = resolve('.swiftbrowse');
+  mkdirSync(outputDir, { recursive: true });
+  const mode = parseFlag('--mode') || 'headless';
+
+  let ok = 0;
+  for (const url of urls) {
+    try {
+      const snapshot = await browse(url, { mode });
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const outFile = join(outputDir, `batch-${ts}.yml`);
+      writeFileSync(outFile, snapshot);
+      ok++;
+      process.stdout.write(`ok  ${url}\n    ${outFile}\n`);
+    } catch (err) {
+      process.stderr.write(`err ${url}\n    ${err.message}\n`);
+    }
+  }
+  process.stdout.write(`\n${ok}/${urls.length} succeeded\n`);
+}
+
 async function runDaemonInternal() {
   const { runDaemon } = await import('./src/daemon.js');
   const opts = {
@@ -207,7 +255,7 @@ async function runDaemonInternal() {
     viewport: parseFlag('--viewport'),
     storageState: parseFlag('--storage-state'),
   };
-  const outputDir = parseFlag('--output-dir') || resolve('.barebrowse');
+  const outputDir = parseFlag('--output-dir') || resolve('.swiftbrowse');
   const url = parseFlag('--url');
   await runDaemon(opts, outputDir, url || undefined);
 }
@@ -240,7 +288,7 @@ function install() {
 
   const mcpEntry = {
     command: 'npx',
-    args: ['barebrowse', 'mcp'],
+    args: ['swiftbrowse', 'mcp'],
   };
 
   const targets = detectTargets();
@@ -256,13 +304,13 @@ function install() {
       const config = readJsonOrEmpty(target.path);
       if (!config.mcpServers) config.mcpServers = {};
 
-      if (config.mcpServers.barebrowse) {
+      if (config.mcpServers.swiftbrowse) {
         console.log(`  ${target.name}: already configured`);
         installed++;
         continue;
       }
 
-      config.mcpServers.barebrowse = mcpEntry;
+      config.mcpServers.swiftbrowse = mcpEntry;
 
       const dir = join(target.path, '..');
       mkdirSync(dir, { recursive: true });
@@ -281,24 +329,24 @@ function install() {
 
   // Always print Claude Code hint (it uses `claude mcp add`, not JSON config)
   console.log(`\nClaude Code: run this instead of install:`);
-  console.log(`  claude mcp add barebrowse -- npx barebrowse mcp\n`);
+  console.log(`  claude mcp add swiftbrowse -- npx swiftbrowse mcp\n`);
 }
 
 function installSkill() {
   const thisDir = fileURLToPath(new URL('.', import.meta.url));
-  const src = join(thisDir, 'commands', 'barebrowse', 'SKILL.md');
+  const src = join(thisDir, 'commands', 'swiftbrowse', 'SKILL.md');
 
   if (!existsSync(src)) {
-    console.error('SKILL.md not found in package. Reinstall barebrowse.');
+    console.error('SKILL.md not found in package. Reinstall swiftbrowse.');
     process.exit(1);
   }
 
-  const dest = join(homedir(), '.config', 'claude', 'skills', 'barebrowse', 'SKILL.md');
+  const dest = join(homedir(), '.config', 'claude', 'skills', 'swiftbrowse', 'SKILL.md');
   const destDir = join(dest, '..');
   mkdirSync(destDir, { recursive: true });
   copyFileSync(src, dest);
   console.log(`Skill installed: ${dest}`);
-  console.log('Claude Code will now see barebrowse as an available skill.');
+  console.log('Claude Code will now see swiftbrowse as an available skill.');
 }
 
 function detectTargets() {
@@ -343,12 +391,12 @@ function readJsonOrEmpty(path) {
 // --- Usage ---
 
 function printUsage() {
-  process.stdout.write(`barebrowse -- CDP-direct browsing for autonomous agents
+  process.stdout.write(`swiftbrowse -- CDP-direct browsing for autonomous agents
 
 Session:
-  barebrowse open [url] [flags]     Open browser session
-  barebrowse close                  Close session
-  barebrowse status                 Check session status
+  swiftbrowse open [url] [flags]     Open browser session
+  swiftbrowse close                  Close session
+  swiftbrowse status                 Check session status
 
   Open flags:
     --mode=headless|headed|hybrid   Browser mode (default: headless)
@@ -363,51 +411,65 @@ Session:
     --storage-state=FILE            Load cookies/localStorage from JSON file
 
 Navigation:
-  barebrowse goto <url>             Navigate to URL
-  barebrowse back                   Go back in history
-  barebrowse forward                Go forward in history
-  barebrowse snapshot [--mode=M]    ARIA snapshot -> .barebrowse/page-*.yml
-  barebrowse screenshot [--format]  Screenshot -> .barebrowse/screenshot-*.png
-  barebrowse pdf [--landscape]      PDF export -> .barebrowse/page-*.pdf
+  swiftbrowse goto <url>             Navigate to URL
+  swiftbrowse back                   Go back in history
+  swiftbrowse forward                Go forward in history
+  swiftbrowse snapshot [--mode=M]    ARIA snapshot -> .swiftbrowse/page-*.yml
+  swiftbrowse screenshot [opts]      Screenshot -> .swiftbrowse/screenshot-*.png
+    --format=png|jpeg|webp          Image format (default: png)
+    --selector=CSS                  Crop to matching element
+  swiftbrowse pdf [--landscape]      PDF export -> .swiftbrowse/page-*.pdf
 
 Interaction:
-  barebrowse click <ref>            Click element
-  barebrowse type <ref> <text>      Type text (--clear to replace)
-  barebrowse fill <ref> <text>      Clear + type
-  barebrowse press <key>            Press key (Enter, Tab, Escape, ...)
-  barebrowse scroll <deltaY>        Scroll (positive=down)
-  barebrowse hover <ref>            Hover element
-  barebrowse select <ref> <value>   Select dropdown value
-  barebrowse drag <from> <to>       Drag element to another
-  barebrowse upload <ref> <files..> Upload files to file input
+  swiftbrowse click <ref>            Click element
+  swiftbrowse type <ref> <text>      Type text (--clear to replace)
+  swiftbrowse fill <ref> <text>      Clear + type
+  swiftbrowse press <key>            Press key (Enter, Tab, Escape, ...)
+  swiftbrowse scroll <deltaY>        Scroll (positive=down)
+  swiftbrowse hover <ref>            Hover element
+  swiftbrowse select <ref> <value>   Select dropdown value
+  swiftbrowse drag <from> <to>       Drag element to another
+  swiftbrowse upload <ref> <files..> Upload files to file input
 
 Tabs:
-  barebrowse tabs                   List open tabs
-  barebrowse tab <index>            Switch to tab by index
+  swiftbrowse tabs                   List open tabs
+  swiftbrowse tab <index>            Switch to tab by index
 
 Debugging:
-  barebrowse eval <expression>      Run JS in page context
-  barebrowse wait-idle [--timeout]  Wait for network idle
-  barebrowse wait-for [opts]        Wait for text/selector to appear
+  swiftbrowse text [--max-chars=N]   Plain text from main content area
+  swiftbrowse extract <sel> [opts]   CSS selector → text (or attribute)
+    --all                           Return all matches (array) instead of first
+    --attr=NAME                     Read property/attribute instead of innerText
+  swiftbrowse links                  All hyperlinks → .swiftbrowse/links-*.json
+  swiftbrowse table [selector]       HTML table → .swiftbrowse/table-*.json
+
+  swiftbrowse eval <expression>      Run JS in page context
+  swiftbrowse wait-idle [--timeout]  Wait for network idle
+  swiftbrowse wait-for [opts]        Wait for text/selector to appear
     --text=STRING                   Wait for text in page body
     --selector=CSS                  Wait for CSS selector to match
     --timeout=N                     Max wait time in ms (default: 30000)
-  barebrowse console-logs           Console logs -> .barebrowse/console-*.json
-  barebrowse network-log            Network log -> .barebrowse/network-*.json
-  barebrowse dialog-log             JS dialog log -> .barebrowse/dialogs-*.json
-  barebrowse save-state             Cookies + localStorage -> .barebrowse/state-*.json
+  swiftbrowse console-logs           Console logs -> .swiftbrowse/console-*.json
+  swiftbrowse network-log            Network log -> .swiftbrowse/network-*.json
+  swiftbrowse dialog-log             JS dialog log -> .swiftbrowse/dialogs-*.json
+  swiftbrowse save-state             Cookies + localStorage -> .swiftbrowse/state-*.json
+
+Batch:
+  swiftbrowse browse-batch [urls..]  Scrape multiple URLs, each → .swiftbrowse/batch-*.yml
+    --file=FILE                     Read URLs from a text file (one per line)
+    --mode=headless|headed          Browser mode (default: headless)
 
 One-shot:
-  barebrowse browse <url> [mode]    Browse + print snapshot to stdout
+  swiftbrowse browse <url> [mode]    Browse + print snapshot to stdout
 
 MCP:
-  barebrowse mcp                    Start MCP server (JSON-RPC over stdio)
-  barebrowse install                Auto-configure MCP for Claude Desktop / Cursor
-  barebrowse install --skill        Install SKILL.md for Claude Code
+  swiftbrowse mcp                    Start MCP server (JSON-RPC over stdio)
+  swiftbrowse install                Auto-configure MCP for Claude Desktop / Cursor
+  swiftbrowse install --skill        Install SKILL.md for Claude Code
 
 As a library:
-  import { browse, connect } from 'barebrowse';
+  import { browse, connect } from 'swiftbrowse';
 
-More: see README.md or commands/barebrowse.md
+More: see README.md or commands/swiftbrowse.md
 `);
 }

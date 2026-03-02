@@ -10,7 +10,7 @@ import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 // Re-implement saveSnapshot locally to test the logic (it's not exported from mcp-server.js)
-const OUTPUT_DIR = join(import.meta.dirname, '../../.barebrowse-test');
+const OUTPUT_DIR = join(import.meta.dirname, '../../.swiftbrowse-test');
 
 function saveSnapshot(text) {
   mkdirSync(OUTPUT_DIR, { recursive: true });

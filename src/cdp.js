@@ -12,22 +12,36 @@
 /**
  * Create a CDP client connected to the given WebSocket URL.
  * @param {string} wsUrl - WebSocket URL (ws://127.0.0.1:PORT/devtools/...)
+ * @param {object} [opts]
+ * @param {number} [opts.commandTimeout=30000] - Per-command response timeout in ms (0 = disabled)
  * @returns {Promise<CDPClient>}
  */
-export async function createCDP(wsUrl) {
+export async function createCDP(wsUrl, opts = {}) {
+  const commandTimeout = opts.commandTimeout ?? 30000;
   const ws = new WebSocket(wsUrl);
   let nextId = 1;
   const pending = new Map();   // id → { resolve, reject }
   const listeners = new Map(); // "method" or "sessionId:method" → Set<callback>
 
   await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('CDP connection timeout (5s)')), 5000);
+    const timeout = setTimeout(() => {
+      ws.close(); // prevent dangling socket
+      reject(new Error('CDP connection timeout (5s)'));
+    }, 5000);
     ws.onopen = () => { clearTimeout(timeout); resolve(); };
     ws.onerror = (e) => {
       clearTimeout(timeout);
       reject(new Error(`CDP WebSocket connection failed: ${e.message || 'unknown error'}`));
     };
   });
+
+  // Reject all in-flight commands when the socket closes (Chrome crashed, etc.)
+  ws.onclose = () => {
+    for (const [, handler] of pending) {
+      handler.reject(new Error('CDP WebSocket closed unexpectedly'));
+    }
+    pending.clear();
+  };
 
   ws.onmessage = (event) => {
     const msg = JSON.parse(typeof event.data === 'string' ? event.data : event.data.toString());
@@ -64,16 +78,18 @@ export async function createCDP(wsUrl) {
     }
   };
 
+  // Post-connection error: reject any in-flight commands
   ws.onerror = (e) => {
-    for (const [id, handler] of pending) {
+    for (const [, handler] of pending) {
       handler.reject(new Error(`CDP WebSocket error: ${e.message || 'unknown'}`));
-      pending.delete(id);
     }
+    pending.clear();
   };
 
   const client = {
     /**
      * Send a CDP command and wait for the response.
+     * Auto-rejects after commandTimeout ms to prevent indefinite hangs.
      * @param {string} method - CDP method (e.g. 'Page.navigate')
      * @param {object} [params] - Command parameters
      * @param {string} [sessionId] - Target session (for flattened mode)
@@ -83,8 +99,24 @@ export async function createCDP(wsUrl) {
       const id = nextId++;
       const msg = { id, method, params };
       if (sessionId) msg.sessionId = sessionId;
+
       return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject });
+        let timer;
+
+        const entry = {
+          resolve(val) { clearTimeout(timer); resolve(val); },
+          reject(err)  { clearTimeout(timer); reject(err); },
+        };
+
+        if (commandTimeout > 0) {
+          timer = setTimeout(() => {
+            if (pending.delete(id)) {
+              reject(new Error(`CDP command timeout (${commandTimeout}ms): ${method}`));
+            }
+          }, commandTimeout);
+        }
+
+        pending.set(id, entry);
         ws.send(JSON.stringify(msg));
       });
     },

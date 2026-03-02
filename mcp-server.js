@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * mcp-server.js — MCP server for barebrowse.
+ * mcp-server.js — MCP server for swiftbrowse.
  *
  * Raw JSON-RPC 2.0 over stdio. No SDK dependency.
  * 12 tools: browse, goto, snapshot, click, type, press, scroll, back, forward, drag, upload, pdf.
@@ -14,7 +14,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const MAX_CHARS_DEFAULT = 30000;
-const OUTPUT_DIR = join(process.cwd(), '.barebrowse');
+const OUTPUT_DIR = join(process.cwd(), '.swiftbrowse');
 
 function saveSnapshot(text) {
   mkdirSync(OUTPUT_DIR, { recursive: true });
@@ -40,7 +40,7 @@ const TOOLS = [
       properties: {
         url: { type: 'string', description: 'URL to browse' },
         mode: { type: 'string', enum: ['headless', 'headed', 'hybrid'], description: 'Browser mode (default: headless)' },
-        maxChars: { type: 'number', description: 'Max chars to return inline. Larger snapshots are saved to .barebrowse/ and a file path is returned instead. Default: 30000.' },
+        maxChars: { type: 'number', description: 'Max chars to return inline. Larger snapshots are saved to .swiftbrowse/ and a file path is returned instead. Default: 30000.' },
       },
       required: ['url'],
     },
@@ -62,7 +62,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        maxChars: { type: 'number', description: 'Max chars to return inline. Larger snapshots are saved to .barebrowse/ and a file path is returned instead. Default: 30000.' },
+        maxChars: { type: 'number', description: 'Max chars to return inline. Larger snapshots are saved to .swiftbrowse/ and a file path is returned instead. Default: 30000.' },
       },
     },
   },
@@ -249,7 +249,7 @@ async function handleMessage(msg) {
     return jsonrpcResponse(id, {
       protocolVersion: '2024-11-05',
       capabilities: { tools: {} },
-      serverInfo: { name: 'barebrowse', version: '0.4.6' },
+      serverInfo: { name: 'swiftbrowse', version: '0.4.6' },
     });
   }
 
