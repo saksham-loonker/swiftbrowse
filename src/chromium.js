@@ -97,11 +97,12 @@ const CANDIDATES = IS_WIN ? [
   '/usr/local/bin/chromium',
   '/opt/homebrew/bin/chromium',
 ] : [
-  // Linux — command names resolved via `which`
-  'chromium-browser',
-  'chromium',
+  // Ubuntu allows the standard Chrome install through its AppArmor policy.
+  // Prefer it over downloaded Chromium wrappers that cannot create a sandbox.
   'google-chrome-stable',
   'google-chrome',
+  'chromium-browser',
+  'chromium',
   'brave-browser-stable',
   'brave-browser',
   'microsoft-edge-stable',
