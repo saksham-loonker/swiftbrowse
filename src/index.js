@@ -120,6 +120,8 @@ export async function browse(url, opts = {}) {
  * @property {boolean} cookieInjection - Cookie extraction/injection is active (off in incognito)
  */
 
+/** @typedef {NonNullable<Parameters<typeof connect>[0]>} ConnectOptions */
+
 /**
  * Options for `page.snapshot()`. Pass `false` instead of an object to skip
  * pruning and return the raw ARIA tree.
@@ -135,6 +137,35 @@ export async function browse(url, opts = {}) {
  * Options for `page.injectCookies()`.
  * @typedef {{ browser?: string }} CookieOptions
  */
+
+
+/** True if a browser finder resolves a binary; false if it throws (none found). */
+function canFind(finder) {
+  try { finder(); return true; } catch { return false; }
+}
+
+/**
+ * Decide which engine connect() should use. Pure — the caller passes lazy
+ * probe thunks so this is unit-testable without launching a browser.
+ * An explicit `opts.engine` is always honored (existence is checked downstream
+ * by launch()/connectFirefox(), which throw a clear install message if missing).
+ * Attach mode (`opts.port`) is CDP/Chromium-only. Otherwise (no engine picked)
+ * prefer Chromium, fall back to Firefox, and if neither is installed throw.
+ * @param {{engine?: string, port?: number}} opts
+ * @param {{hasChromium: () => boolean, hasFirefox: () => boolean}} probe
+ * @returns {{engine: 'chromium'|'firefox', fellBack: boolean}}
+ */
+export function resolveEngine(opts, probe) {
+  if (opts.engine === 'firefox') return { engine: 'firefox', fellBack: false };
+  if (opts.engine === 'chromium') return { engine: 'chromium', fellBack: false };
+  if (opts.port) return { engine: 'chromium', fellBack: false };
+  if (probe.hasChromium()) return { engine: 'chromium', fellBack: false };
+  if (probe.hasFirefox()) return { engine: 'firefox', fellBack: true };
+  throw new Error(
+    'No supported browser found. Install a Chromium browser (chrome, chromium, '
+    + 'brave, or edge) or Firefox (>= 121 for stable WebDriver BiDi).',
+  );
+}
 
 /**
  * Connect to a browser for a long-lived interactive session.
@@ -185,34 +216,6 @@ export async function browse(url, opts = {}) {
  *   structurally from the returned object literals; annotating it as `Page`
  *   would be a self-reference, since `Page` is `ReturnType<typeof connect>`.
  */
-/** True if a browser finder resolves a binary; false if it throws (none found). */
-function canFind(finder) {
-  try { finder(); return true; } catch { return false; }
-}
-
-/**
- * Decide which engine connect() should use. Pure — the caller passes lazy
- * probe thunks so this is unit-testable without launching a browser.
- * An explicit `opts.engine` is always honored (existence is checked downstream
- * by launch()/connectFirefox(), which throw a clear install message if missing).
- * Attach mode (`opts.port`) is CDP/Chromium-only. Otherwise (no engine picked)
- * prefer Chromium, fall back to Firefox, and if neither is installed throw.
- * @param {{engine?: string, port?: number}} opts
- * @param {{hasChromium: () => boolean, hasFirefox: () => boolean}} probe
- * @returns {{engine: 'chromium'|'firefox', fellBack: boolean}}
- */
-export function resolveEngine(opts, probe) {
-  if (opts.engine === 'firefox') return { engine: 'firefox', fellBack: false };
-  if (opts.engine === 'chromium') return { engine: 'chromium', fellBack: false };
-  if (opts.port) return { engine: 'chromium', fellBack: false };
-  if (probe.hasChromium()) return { engine: 'chromium', fellBack: false };
-  if (probe.hasFirefox()) return { engine: 'firefox', fellBack: true };
-  throw new Error(
-    'No supported browser found. Install a Chromium browser (chrome, chromium, '
-    + 'brave, or edge) or Firefox (>= 121 for stable WebDriver BiDi).',
-  );
-}
-
 export async function connect(opts = {}) {
   const viewport = parseViewport(opts.viewport);
   opts = { ...opts, viewport };
@@ -681,6 +684,7 @@ export async function connect(opts = {}) {
 
     downloads,
 
+    /** @param {{format?: 'png'|'jpeg'|'webp', quality?: number, selector?: string}} [screenshotOpts] */
     async screenshot(screenshotOpts = {}) {
       const format = screenshotOpts.format || 'png';
       const params = { format };
@@ -889,7 +893,9 @@ async function connectFirefox(opts) {
     return { bidi: next.bidi, topContext: next.topContext };
   }
 
-  const page = await createFirefoxPage(bidi, {
+  let page;
+  try {
+  page = await createFirefoxPage(bidi, {
     pruneMode: opts.pruneMode,
     urlGuard: { allowLocalUrls: opts.allowLocalUrls, blockPrivateNetwork: opts.blockPrivateNetwork },
     uploadDir: opts.uploadDir || null,
@@ -899,6 +905,12 @@ async function connectFirefox(opts) {
     headed: opts.mode === 'headed',
     relaunchHeaded: hybrid ? relaunchHeaded : null,
   });
+  } catch (err) {
+    try { bidi.close(); } catch {}
+    await cleanupFirefox(browser);
+    if (ownedDownloadDir) { try { rmSync(ownedDownloadDir, { recursive: true, force: true }); } catch {} }
+    throw err;
+  }
   const closePage = page.close.bind(page);
   page.close = async () => {
     try {
@@ -1061,9 +1073,12 @@ export function _resetBlocklistWarning() {
  * Navigate to a URL and wait for the page to load.
  */
 async function navigate(page, url, timeout = 30000) {
-  const loadPromise = page.session.once('Page.loadEventFired', timeout);
-  await page.session.send('Page.navigate', { url });
-  await loadPromise;
+  await Promise.all([
+    page.session.once('Page.loadEventFired', timeout),
+    page.session.send('Page.navigate', { url }).then(result => {
+      if (result.errorText) throw new Error(`Navigation failed: ${result.errorText}`);
+    }),
+  ]);
   // Brief settle time for dynamic content
   await new Promise((r) => setTimeout(r, 500));
 }

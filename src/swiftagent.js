@@ -37,8 +37,8 @@ const settle = () => new Promise((r) => setTimeout(r, SETTLE_MS));
 
 /**
  * Create bareagent-compatible browse tools.
- * @param {object} [opts] - Options passed to connect() for session tools
- * @returns {{ tools: Array, close: () => Promise<void> }}
+ * @param {import('./index.js').ConnectOptions} [opts] - Options passed to connect() for session tools
+ * @returns {{ tools: BrowseTool[], close: () => Promise<void> }}
  */
 export function createBrowseTools(opts = {}) {
   let _page = null;

@@ -690,4 +690,3 @@ export async function runDaemon(opts, outputDir, initialUrl) {
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
 }
-

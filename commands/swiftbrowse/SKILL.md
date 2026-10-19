@@ -22,6 +22,23 @@ All output files go to `.swiftbrowse/` in the current directory. Read them with 
 
 ## Commands
 
+### Reading and extraction
+
+| Command | Result |
+| --- | --- |
+| `swiftbrowse readable` | Main article text |
+| `swiftbrowse text --max-chars=12000` | Plain main-content text |
+| `swiftbrowse extract '.price' --all` | Text from matching elements |
+| `swiftbrowse extract 'a.next' --attr=href` | Property or attribute value |
+| `swiftbrowse links` | Link URLs and labels |
+| `swiftbrowse table '#results'` | Headers and rows |
+| `swiftbrowse screenshot --selector=h1` | Cropped screenshot; missing selectors throw |
+| `swiftbrowse browse-batch --file=urls.txt --incognito` | Batch; nonzero exit on failure |
+
+Choose `--engine=firefox` independently of `--browser`, which selects the cookie
+source. Headed mode launches a browser; `--port` attaches to an existing Chromium
+and preserves it on close. Use `--incognito` to skip authentication injection.
+
 ### Session Lifecycle
 
 | Command | Description |

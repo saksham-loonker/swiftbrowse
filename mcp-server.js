@@ -511,7 +511,7 @@ async function handleToolCall(name, args) {
     case 'browse': {
       let timer;
       const text = await Promise.race([
-        browse(args.url, { mode: args.mode, pruneMode: args.pruneMode, incognito: args.incognito }),
+        browse(args.url, { mode: args.mode, pruneMode: args.pruneMode, incognito: args.incognito ?? engineInfo().incognito, engine: process.env.SWIFTBROWSE_ENGINE ?? process.env.BAREBROWSE_ENGINE }),
         new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('browse timed out after 60s')), 60000); }),
       ]);
       clearTimeout(timer);

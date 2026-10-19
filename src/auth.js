@@ -68,7 +68,9 @@ export function findChromiumCookieDb() {
   }
   for (const [browser, path] of Object.entries(CHROMIUM_PATHS)) {
     if (browser === 'chromeNet') continue; // already checked
-    if (existsSync(path)) return { path, browser };
+    const networkPath = join(path, '..', 'Network', 'Cookies');
+    const source = existsSync(networkPath) ? networkPath : path;
+    if (existsSync(source)) return { path: source, browser };
   }
   return null;
 }
@@ -399,8 +401,10 @@ export function extractCookies(opts = {}) {
       : browser;
     const path = CHROMIUM_PATHS[pathKey];
     if (!path) throw new Error(`Unknown browser: "${browser}"`);
-    if (!existsSync(path)) throw new Error(`${browser} cookie database not found at ${path}`);
-    return extractChromiumCookies(path, browser, domain);
+    const networkPath = join(path, '..', 'Network', 'Cookies');
+    const source = existsSync(networkPath) ? networkPath : path;
+    if (!existsSync(source)) throw new Error(`${browser} cookie database not found at ${source}`);
+    return extractChromiumCookies(source, browser, domain);
   }
 
   // Auto: try all browsers, merge (last-write-wins by name+domain)

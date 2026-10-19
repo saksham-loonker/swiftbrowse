@@ -1,3 +1,22 @@
+# SwiftBrowse changelog
+
+## 0.24.0
+
+- Merge all 144 BareBrowse commits through v0.23.0, retaining history and Apache-2.0 attribution.
+- Preserve SwiftBrowse platform discovery, cookie support, batch browsing and extraction.
+- Share text, selector, table and link extraction across Chromium, Firefox, CLI, MCP and agent tools.
+- Unify one-shot browsing with persistent engine selection and cleanup.
+- Add Windows process-tree cleanup, safe startup rollback and bounded CDP waits.
+- Validate daemon requests and sessions; bound captured logs; preserve authenticated command tokens.
+- Fix mapped IPv6 private-address checks, viewport object handling and batch option parsing.
+- Package generated declarations and the installable agent skill; check Node 22/24 across three OSes.
+- Make browser tests use local fixtures; keep public-site tests opt-in.
+
+Compatibility: headed mode launches a browser (use port to attach); missing screenshot selectors throw;
+snapshots use canonical current URLs; batch failures set a nonzero exit status. See docs/migration.md.
+
+The following entries preserve BareBrowse's upstream release history.
+
 # Changelog
 
 ## [0.23.0] - 2026-10-14

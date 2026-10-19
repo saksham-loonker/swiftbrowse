@@ -505,6 +505,7 @@ export async function createFirefoxPage(bidi, opts = {}) {
       await new Promise((r) => setTimeout(r, 300));
     },
 
+    /** @param {{format?: 'png'|'jpeg'|'webp', quality?: number, selector?: string}} [screenshotOpts] */
     async screenshot(screenshotOpts = {}) {
       const fmt = screenshotOpts.format || 'png';
       const type = fmt === 'jpeg' ? 'image/jpeg' : fmt === 'webp' ? 'image/webp' : 'image/png';

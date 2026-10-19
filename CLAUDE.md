@@ -10,27 +10,14 @@
 
 **Open-source only.** No vendor lock-in. Every line of code must have a purpose — no speculative code, no premature abstractions.
 
-## Project Specifics
+## Project specifics
 
-- **What:** Vanilla JS library — CDP-direct browsing for autonomous agents. URL in, pruned ARIA snapshot out.
-- **Language:** Vanilla JavaScript, ES modules, no runtime build step (JSDoc→`.d.ts` types generated at publish only)
-- **Runtime:** Node.js >= 22 (built-in `node:sqlite` for reading cookie DBs)
-- **Protocol:** CDP (Chrome DevTools Protocol) direct — no Playwright
-- **Browser:** Any installed Chromium-based browser (chromium, chrome, brave, edge)
-- **Modules:** ~16 files in `src/`. Two runtime deps: `ws` (CDP transport — Node's built-in WebSocket caps messages ~3MB and tears down the socket) and `@mozilla/readability` (`readable()` article extraction). Both vetted/lightweight per the dependency rule.
-- **Tests:** 160+ passing — run with `node --test test/unit/*.test.js test/integration/*.test.js`
-- **Docs:** `docs/README.md` (navigation guide to all documentation)
-
-<!-- MEMORY:START -->
-@.claude/remember/MEMORY.md
-<!-- MEMORY:END -->
-
-<!-- AGENT_RULES:START -->
-Standards guide (read when designing/building something new, not hot context):
-.claude/remember/AGENT_RULES.md
-<!-- AGENT_RULES:END -->
-
-<!-- DOCS_INDEX:START -->
-Docs map: `docs/index.md` — every doc in this project, with line counts.
-Search this corpus instead of reading it whole: `/docs-builder search <query words>`
-<!-- DOCS_INDEX:END -->
+- JavaScript ESM, Node >=22.13. No runtime build step.
+- Chromium uses CDP; Firefox uses WebDriver BiDi. Runtime dependencies: ws and Mozilla Readability.
+- Share extraction behavior in src/scrape.js and safety policies in src/url-guard.js.
+- Keep swiftbrowse/swiftagent and swiftbrowse/bareagent compatible.
+- Generate declarations with npm run build:types; never edit generated types/.
+- Verify with npm run typecheck, npm test, npm run check:lockfile, npm pack.
+- Default integration tests use local fixtures; live-site tests require SWIFTBROWSE_LIVE_TESTS=1.
+- Preserve Apache-2.0 LICENSE, NOTICE and original LICENSE-MIT attribution.
+- Current docs: README.md and docs/migration.md. Other product/log documents are historical reference.
