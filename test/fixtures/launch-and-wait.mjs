@@ -8,4 +8,5 @@ console.log(`BROWSER_PID:${browser.process.pid}`);
 console.log(`PROFILE_DIR:${browser.ownedProfileDir}`);
 
 // Keep the event loop alive — wait for a signal to arrive
+process.on('message', message => { if (message === 'shutdown') process.exit(0); });
 await new Promise(() => {});

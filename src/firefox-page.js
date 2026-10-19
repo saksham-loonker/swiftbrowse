@@ -1,9 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
 import { createScrapingTools } from './scrape.js';
 /**
- * firefox-page.js â€” A swiftbrowse page object backed by WebDriver BiDi (Firefox).
+ * firefox-page.js — A swiftbrowse page object backed by WebDriver BiDi (Firefox).
  *
- * Mirrors the core of connect()'s CDP page surface â€” goto, snapshot, click,
- * type, press, scroll, hover, readable, injectCookies, close â€” but every
+ * Mirrors the core of connect()'s CDP page surface — goto, snapshot, click,
+ * type, press, scroll, hover, readable, injectCookies, close — but every
  * operation goes over BiDi instead of CDP. The tree that snapshot() feeds to
  * prune.js/aria.js is reconstructed in-page by ax-snapshot.js (BiDi has no
  * getFullAXTree), and refs resolve to elements through the data-bb-ref
@@ -60,10 +62,10 @@ export async function createFirefoxPage(bidi, opts = {}) {
   // browser lifecycle is owned by connectFirefox, which supplies relaunchHeaded.
   const hybrid = !!opts.hybrid;
   const relaunchHeaded = opts.relaunchHeaded || null;
-  let currentlyHeaded = !!opts.headed; // already headed â†’ no fallback needed
+  let currentlyHeaded = !!opts.headed; // already headed → no fallback needed
   let botBlocked = false;
   // Last injectCookies(url, opts) args, so a hybrid relaunch (a brand-new
-  // Firefox profile) can re-inject them â€” otherwise the headed retry loads
+  // Firefox profile) can re-inject them — otherwise the headed retry loads
   // unauthenticated, defeating hybrid on an auth-gated challenge page.
   let lastInject = null;
   // The active browsing context. Starts at the initial tab; switchTab() points
@@ -71,13 +73,13 @@ export async function createFirefoxPage(bidi, opts = {}) {
   const { contexts } = await bidi.send('browsingContext.getTree', {});
   let topContext = contexts[0].context;
 
-  // ref (string int) â†’ owning browsing-context id, rebuilt every snapshot so a
+  // ref (string int) → owning browsing-context id, rebuilt every snapshot so a
   // click after a snapshot routes to the frame the element actually lives in.
   let refContexts = new Map();
 
   /**
    * Depth-first list of the ACTIVE tab's contexts (main frame + descendant
-   * frames). Scoped to `topContext` via getTree's `root` param â€” without it
+   * frames). Scoped to `topContext` via getTree's `root` param — without it
    * getTree returns every open tab flat, and after switchTab() to a non-first
    * tab the positional iframe-splice in snapshot() grafts another tab's frame
    * into the active tab (verified: INNER1 leaked into TAB2). Root-scoping keeps
@@ -111,7 +113,7 @@ export async function createFirefoxPage(bidi, opts = {}) {
       let raw;
       try {
         raw = await bidi.evaluate(ctx, axSnapshotExpression(base), false);
-      } catch { continue; } // frame navigated mid-snapshot â€” skip it
+      } catch { continue; } // frame navigated mid-snapshot — skip it
       const { tree, count } = JSON.parse(raw);
       for (let r = base + 1; r <= base + count; r++) refContexts.set(String(r), ctx);
       base += count;
@@ -119,7 +121,7 @@ export async function createFirefoxPage(bidi, opts = {}) {
     }
 
     // Splice each child frame's tree under an <iframe> (role 'Iframe')
-    // placeholder in its parent, matched by document order â€” BiDi getTree
+    // placeholder in its parent, matched by document order — BiDi getTree
     // lists children in frame order, and the AX walk emits Iframe nodes in
     // the same order.
     const iframeNodes = (tree) => {
@@ -178,9 +180,9 @@ export async function createFirefoxPage(bidi, opts = {}) {
 
   // Download tracking, parity with the CDP `page.downloads` array. Firefox
   // downloads land in `downloadDir` (a throwaway dir the caller sets via launch
-  // prefs â€” see connectFirefox / firefox.js), so `savedPath` is a real path the
+  // prefs — see connectFirefox / firefox.js), so `savedPath` is a real path the
   // caller can read. BiDi emits browsingContext.downloadWillBegin (start) +
-  // downloadEnd (finish, with the actual filepath + status) â€” measured against
+  // downloadEnd (finish, with the actual filepath + status) — measured against
   // real Firefox. Records mirror the CDP shape:
   // { url, suggestedFilename, savedPath, state, totalBytes, receivedBytes }.
   const downloads = [];
@@ -257,10 +259,10 @@ export async function createFirefoxPage(bidi, opts = {}) {
     await new Promise((r) => setTimeout(r, 500));
     // Build the tree ONCE and use it for both consent dismissal and challenge
     // detection. A challenge page (Cloudflare/hCaptcha) never carries a consent
-    // banner, so dismissing consent can't flip the challenge verdict â€” reusing
+    // banner, so dismissing consent can't flip the challenge verdict — reusing
     // the pre-dismiss tree avoids a second full AX reconstruction per goto.
     let root = null;
-    try { root = await buildTree(); } catch { /* null â†’ treated as challenge */ }
+    try { root = await buildTree(); } catch { /* null → treated as challenge */ }
     if (consent && root) {
       try { await dismissConsentFirefox(root, (ref) => pointerClick(ref)); }
       catch { /* consent dismissal is best-effort */ }
@@ -281,7 +283,7 @@ export async function createFirefoxPage(bidi, opts = {}) {
     engine: 'firefox',
 
     /**
-     * Introspection of this session's engine, mode, and feature support â€”
+     * Introspection of this session's engine, mode, and feature support —
      * mirrors connect()'s Chromium `page.capabilities`. Fields are launch-fixed
      * except `stealth`, a live getter tracking the current headed/headless
      * state. `reloadIgnoreCache` is false here (upstream BiDi gap); Firefox is
@@ -301,7 +303,7 @@ export async function createFirefoxPage(bidi, opts = {}) {
 
     async goto(url, timeout = 30000) {
       url = normalizeUrl(url);
-      // Same navigation guard the CDP path enforces â€” block file:/chrome:/
+      // Same navigation guard the CDP path enforces — block file:/chrome:/
       // view-source: and (optionally) private-network hosts before navigating.
       assertNavigable(url, urlGuard);
       refContexts = new Map(); // refs from the previous page are now stale
@@ -312,20 +314,20 @@ export async function createFirefoxPage(bidi, opts = {}) {
       botBlocked = await afterNavigate();
 
       // Hybrid fallback: on a bot-challenge page, relaunch headed once and
-      // retry â€” a real display often clears an interstitial headless can't.
+      // retry — a real display often clears an interstitial headless can't.
       // Only when hybrid mode and we're still headless. relaunchHeaded (from
       // connectFirefox) tears down this Firefox+BiDi and returns a fresh one.
       if (botBlocked && hybrid && !currentlyHeaded && relaunchHeaded) {
         try {
           const relaunched = await relaunchHeaded();
-          bidi = relaunched.bidi;          // rebind the closure â€” all inner fns follow
+          bidi = relaunched.bidi;          // rebind the closure — all inner fns follow
           topContext = relaunched.topContext;
           currentlyHeaded = true;
           refContexts = new Map();
           await setupSubscriptions();      // re-wire dialogs/downloads/load on the new bidi
           // Re-inject cookies into the fresh profile BEFORE navigating, so the
           // headed retry is authenticated (the relaunch is a new Firefox profile
-          // â€” the pre-relaunch session's cookies are gone).
+          // — the pre-relaunch session's cookies are gone).
           if (lastInject) {
             try { await page.injectCookies(lastInject.url, lastInject.cookieOpts); } catch { /* best-effort */ }
           }
@@ -334,7 +336,7 @@ export async function createFirefoxPage(bidi, opts = {}) {
             timeout, `goto(${url})`);
           botBlocked = await afterNavigate();
         } catch {
-          // Headed relaunch failed (no display?) â€” keep the headless result;
+          // Headed relaunch failed (no display?) — keep the headless result;
           // botBlocked stays true so the caller can see it didn't clear.
         }
       }
@@ -352,7 +354,7 @@ export async function createFirefoxPage(bidi, opts = {}) {
       const mode = pruneOpts?.mode || defaultPruneMode;
       const pruned = pruneTree(root, { mode });
       const out = pruned ? formatTree(pruned) : '';
-      const stats = `url: ${pageUrl}\n${raw.length.toLocaleString()} chars â†’ ${out.length.toLocaleString()} chars`
+      const stats = `url: ${pageUrl}\n${raw.length.toLocaleString()} chars → ${out.length.toLocaleString()} chars`
         + ` (${raw.length ? Math.round((1 - out.length / raw.length) * 100) : 0}% pruned)`;
       return stats + '\n' + out;
     },
@@ -410,7 +412,7 @@ export async function createFirefoxPage(bidi, opts = {}) {
     /**
      * Inject cookies from the user's real browser into this Firefox session,
      * via BiDi storage.setCookie. Scoped to the URL host via the SHARED
-     * scopedCookiesForUrl (same as the CDP path) â€” never the whole jar.
+     * scopedCookiesForUrl (same as the CDP path) — never the whole jar.
      */
     /** @param {string} url @param {import('./index.js').CookieOptions} [cookieOpts] */
     async injectCookies(url, cookieOpts = {}) {
@@ -508,7 +510,16 @@ export async function createFirefoxPage(bidi, opts = {}) {
       const type = fmt === 'jpeg' ? 'image/jpeg' : fmt === 'webp' ? 'image/webp' : 'image/png';
       const format = { type };
       if (type !== 'image/png') format.quality = (screenshotOpts.quality || 80) / 100;
-      const { data } = await bidi.send('browsingContext.captureScreenshot', { context: topContext, format });
+      const params = { context: topContext, format };
+      if (screenshotOpts.selector) {
+        const { result } = await bidi.send('script.evaluate', {
+          expression: `document.querySelector(${JSON.stringify(screenshotOpts.selector)})`,
+          target: { context: topContext }, awaitPromise: false,
+        });
+        if (!result?.sharedId) throw new Error(`No visible element matches selector "${screenshotOpts.selector}"`);
+        params.clip = { type: 'element', element: { sharedId: result.sharedId } };
+      }
+      const { data } = await bidi.send('browsingContext.captureScreenshot', params);
       return data; // base64
     },
 
@@ -564,7 +575,7 @@ export async function createFirefoxPage(bidi, opts = {}) {
       return waitForNetworkIdleBiDi(bidi, idleOpts);
     },
 
-    /** Downloads that began in this session (Phase 4 â€” see setupDownloads). */
+    /** Downloads that began in this session (Phase 4 — see setupDownloads). */
     get downloads() { return downloads; },
 
     dialogLog,
@@ -583,7 +594,7 @@ export async function createFirefoxPage(bidi, opts = {}) {
      * Persist cookies + localStorage to a JSON file (parity with the CDP
      * saveState). Cookies come from BiDi storage.getCookies (whose value is a
      * `{type,value}` object) and are flattened to the CDP-symmetric shape so the
-     * file format matches across engines. Written 0600 â€” it holds session
+     * file format matches across engines. Written 0600 — it holds session
      * tokens, so a multi-user host must not be able to read another user's.
      */
     async saveState(filePath) {
@@ -600,7 +611,7 @@ export async function createFirefoxPage(bidi, opts = {}) {
         // BiDi reports sameSite lowercase (strict|lax|none); the CDP saveState /
         // Network.setCookies vocabulary is capitalized (Strict|Lax|None). The only
         // loader for a state file is connect()'s storageState (CDP-only), which
-        // rejects a lowercase enum and silently drops every cookie â€” so capitalize
+        // rejects a lowercase enum and silently drops every cookie — so capitalize
         // here to keep the format truly symmetric and the round-trip working.
         if (c.sameSite && c.sameSite !== 'default') {
           out.sameSite = c.sameSite.charAt(0).toUpperCase() + c.sameSite.slice(1);
@@ -610,7 +621,7 @@ export async function createFirefoxPage(bidi, opts = {}) {
       });
       const lsRaw = await bidi
         .evaluate(topContext, 'JSON.stringify(Object.fromEntries(Object.entries(localStorage)))', false)
-        .catch(() => '{}'); // opaque-origin pages (about:blank) throw â€” treat as empty
+        .catch(() => '{}'); // opaque-origin pages (about:blank) throw — treat as empty
       const state = { cookies: flat, localStorage: JSON.parse(lsRaw || '{}') };
       const { writeFileSync, chmodSync } = await import('node:fs');
       writeFileSync(filePath, JSON.stringify(state, null, 2), { mode: 0o600 });
@@ -619,7 +630,7 @@ export async function createFirefoxPage(bidi, opts = {}) {
 
     /**
      * Resolve when the active tab fires its next load event (parity with the
-     * CDP waitForNavigation â†’ Page.loadEventFired). Scoped to topContext so a
+     * CDP waitForNavigation → Page.loadEventFired). Scoped to topContext so a
      * subframe load can't resolve it early. Falls back to a short settle delay
      * for SPA navigations that fire no load event.
      */
@@ -632,9 +643,9 @@ export async function createFirefoxPage(bidi, opts = {}) {
             clearTimeout(timer); unsub(); resolve();
           });
         }));
-        refContexts = new Map(); // the DOM changed â€” old refs are stale
+        refContexts = new Map(); // the DOM changed — old refs are stale
       } catch {
-        // No load event (SPA pushState/replaceState) â€” settle for DOM updates.
+        // No load event (SPA pushState/replaceState) — settle for DOM updates.
         await new Promise((r) => setTimeout(r, 500));
       }
     },
@@ -655,7 +666,7 @@ export async function createFirefoxPage(bidi, opts = {}) {
     await new Promise((r) => setTimeout(r, 500));
   }
 
-  // Wire event subscriptions before returning â€” dialogs must precede any
+  // Wire event subscriptions before returning — dialogs must precede any
   // navigation so an 'ignore' prompt (see bidi.js capability) is never hung.
   await setupSubscriptions();
 

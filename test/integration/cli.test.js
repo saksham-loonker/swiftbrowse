@@ -71,7 +71,7 @@ describe('CLI session', () => {
     assert.equal(typeof session.token, 'string', 'session should have a token');
     assert.equal(session.token.length, 64, 'token should be 32 random bytes hex');
     const mode = statSync(join(sessionDir, 'session.json')).mode & 0o777;
-    assert.equal(mode, 0o600, `session.json should be 0600, got ${mode.toString(8)}`);
+    if (process.platform !== 'win32') assert.equal(mode, 0o600, `session.json should be 0600, got ${mode.toString(8)}`);
   });
 
   it('daemon rejects /command without the token (no unauthenticated eval)', async () => {
@@ -145,11 +145,11 @@ describe('CLI session', () => {
     assert.equal(out, '2');
   });
 
-  it('console-logs creates a .json file', () => {
+  it('console-logs creates a .json file', async () => {
     // Generate a console log first
     cli(['eval', 'console.log("test-log-message")'], { cwd: tmpDir });
     // Small delay for log capture
-    execFileSync('sleep', ['0.5']);
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     const out = cli(['console-logs'], { cwd: tmpDir });
     assert.ok(out.includes('.json'), `expected .json path, got: ${out}`);
@@ -270,7 +270,7 @@ describe('MCP config diagnostics (no daemon)', () => {
     const fakeHome = mkdtempSync(join(tmpdir(), 'bb-doctor-clean-'));
     try {
       const out = execFileSync(NODE, [CLI, 'doctor'], {
-        cwd: fakeHome, encoding: 'utf8', env: { ...process.env, HOME: fakeHome },
+        cwd: fakeHome, encoding: 'utf8', env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome },
       });
       assert.ok(/0 registrations? found/.test(out) || /No conflict/.test(out),
         `clean home should report no conflict, got:\n${out}`);
@@ -291,7 +291,7 @@ describe('MCP config diagnostics (no daemon)', () => {
         mcpServers: { swiftbrowse: { command: 'node', args: ['/path/B/mcp-server.js'] } },
       }));
       const out = execFileSync(NODE, [CLI, 'doctor'], {
-        cwd: fakeHome, encoding: 'utf8', env: { ...process.env, HOME: fakeHome },
+        cwd: fakeHome, encoding: 'utf8', env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome },
       });
       assert.ok(out.includes('CONFLICT'),
         `divergent endpoints must trigger CONFLICT warning, got:\n${out}`);
@@ -306,7 +306,7 @@ describe('MCP config diagnostics (no daemon)', () => {
     const fakeHome = mkdtempSync(join(tmpdir(), 'bb-doctor-env-'));
     try {
       const out = execFileSync(NODE, [CLI, 'doctor'], {
-        cwd: fakeHome, encoding: 'utf8', env: { ...process.env, HOME: fakeHome },
+        cwd: fakeHome, encoding: 'utf8', env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome },
       });
       assert.ok(out.includes('runtime environment'), `missing environment section:\n${out}`);
       assert.ok(/Default engine: chromium/.test(out), `default engine should be chromium:\n${out}`);
@@ -319,15 +319,15 @@ describe('MCP config diagnostics (no daemon)', () => {
     }
   });
 
-  it('doctor reflects BAREBROWSE_ENGINE=firefox as the default engine (MCP-DIAG 4)', () => {
+  it('doctor reflects SWIFTBROWSE_ENGINE=firefox as the default engine (MCP-DIAG 4)', () => {
     const fakeHome = mkdtempSync(join(tmpdir(), 'bb-doctor-ff-'));
     try {
       const out = execFileSync(NODE, [CLI, 'doctor'], {
         cwd: fakeHome, encoding: 'utf8',
-        env: { ...process.env, HOME: fakeHome, BAREBROWSE_ENGINE: 'firefox' },
+        env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome, SWIFTBROWSE_ENGINE: 'firefox' },
       });
       assert.ok(/Default engine: firefox/.test(out),
-        `BAREBROWSE_ENGINE=firefox must be surfaced as the active engine:\n${out}`);
+        `SWIFTBROWSE_ENGINE=firefox must be surfaced as the active engine:\n${out}`);
     } finally {
       try { rmSync(fakeHome, { recursive: true, force: true }); } catch {}
     }
@@ -346,7 +346,7 @@ describe('MCP config diagnostics (no daemon)', () => {
         mcpServers: { swiftbrowse: { command: 'node', args: ['/old/path/mcp-server.js'] } },
       }));
       const out = execFileSync(NODE, [CLI, 'install'], {
-        cwd: fakeHome, encoding: 'utf8', env: { ...process.env, HOME: fakeHome },
+        cwd: fakeHome, encoding: 'utf8', env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome },
       });
       assert.ok(/CONFLICT/.test(out),
         `install must surface CONFLICT instead of silently overwriting, got:\n${out}`);
@@ -357,7 +357,7 @@ describe('MCP config diagnostics (no daemon)', () => {
 
       // With --force, it does overwrite.
       const out2 = execFileSync(NODE, [CLI, 'install', '--force'], {
-        cwd: fakeHome, encoding: 'utf8', env: { ...process.env, HOME: fakeHome },
+        cwd: fakeHome, encoding: 'utf8', env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome },
       });
       assert.ok(/REPLACED/.test(out2), `--force must replace, got:\n${out2}`);
       const after2 = JSON.parse(readFileSync(cursorPath, 'utf8'));

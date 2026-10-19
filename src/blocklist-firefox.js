@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
 /**
  * blocklist-firefox.js — Ad/tracker blocking on the Firefox/BiDi engine.
  *

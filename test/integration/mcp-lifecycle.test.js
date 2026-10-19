@@ -1,3 +1,5 @@
+import { processList } from '../fixtures/process-list.js';
+import { findFirefox } from '../../src/firefox.js';
 /**
  * Integration tests for the MCP server's browser lifecycle: a transient error
  * must close the browser it forgets (not orphan it), and an idle server must
@@ -18,11 +20,8 @@ import { fileURLToPath } from 'node:url';
 const SERVER = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'mcp-server.js');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function ps() {
-  return execFileSync('ps', ['-eo', 'pid=,ppid=,args=']).toString().split('\n').filter(Boolean)
-    .map((l) => { const m = l.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/); return m && { pid: +m[1], ppid: +m[2], args: m[3] }; })
-    .filter(Boolean);
-}
+const ps = processList;
+const roots = new Map();
 
 /** Main browser processes (not renderer/GPU helpers) owned by a server. */
 function ownedBrowsers(serverPid, engine = 'chromium') {
@@ -36,11 +35,13 @@ function ownedBrowsers(serverPid, engine = 'chromium') {
     }
     return rows.filter((r) => kids.has(r.pid) && r.args.includes('/swiftbrowse-ff-') && !r.args.includes('-contentproc'));
   }
-  return rows.filter((r) => r.args.includes(`--user-data-dir=/tmp/swiftbrowse-${serverPid}-`) && !r.args.includes('--type='));
+  return rows.filter((r) => r.args.includes(`swiftbrowse-${serverPid}-`) && !r.args.includes('--type='));
 }
 
 function profileDirs(serverPid) {
-  return readdirSync('/tmp').filter((d) => d.startsWith(`swiftbrowse-${serverPid}-`));
+  const root = roots.get(serverPid);
+  if (!root || !existsSync(root)) return [];
+  return readdirSync(root).filter(d => d.startsWith(`swiftbrowse-${serverPid}-`)).map(d => join(root, d));
 }
 
 /** Spawn the MCP server in a fresh cwd; returns a JSON-RPC `call` helper + cleanup. */
@@ -50,9 +51,10 @@ async function startServer(env = {}, seed) {
   // TMPDIR inside cwd: download/Firefox-profile temp dirs land there and go with it.
   mkdirSync(join(cwd, 'tmp'));
   const child = spawn('node', [SERVER], {
-    cwd, stdio: ['pipe', 'pipe', 'ignore'],
-    env: { ...process.env, BAREBROWSE_MODE: 'headless', TMPDIR: join(cwd, 'tmp'), ...env },
+    cwd, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true,
+    env: { ...process.env, SWIFTBROWSE_MODE: 'headless', TMPDIR: join(cwd, 'tmp'), TEMP: join(cwd, 'tmp'), TMP: join(cwd, 'tmp'), ...env },
   });
+  roots.set(child.pid, join(cwd, 'tmp'));
   const pending = new Map();
   let buf = '';
   child.stdout.setEncoding('utf8');
@@ -76,10 +78,10 @@ async function startServer(env = {}, seed) {
     return { isError: !!r.result?.isError, text: r.result?.content?.[0]?.text ?? '' };
   };
   const stop = async () => {
-    for (const b of ownedBrowsers(child.pid, env.BAREBROWSE_ENGINE)) { try { process.kill(b.pid, 'SIGKILL'); } catch {} }
+    for (const b of ownedBrowsers(child.pid, env.SWIFTBROWSE_ENGINE)) { try { process.kill(b.pid, 'SIGKILL'); } catch {} }
     child.kill('SIGKILL');
     await sleep(300);
-    for (const d of profileDirs(child.pid)) rmSync(join('/tmp', d), { recursive: true, force: true });
+    for (const d of profileDirs(child.pid)) rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     rmSync(cwd, { recursive: true, force: true });
   };
   return { pid: child.pid, cwd, call, stop };
@@ -179,10 +181,10 @@ describe('MCP server browser lifecycle', () => {
   });
 });
 
-// BAREBROWSE_IDLE_MINUTES=0.05 -> 3s TTL.
-const IDLE = { BAREBROWSE_IDLE_MINUTES: '0.05' };
+// SWIFTBROWSE_IDLE_MINUTES=0.05 -> 3s TTL.
+const IDLE = { SWIFTBROWSE_IDLE_MINUTES: '0.05' };
 let hasFirefox = true;
-try { execFileSync('which', ['firefox']); } catch { hasFirefox = false; }
+try { findFirefox(); } catch { hasFirefox = false; }
 
 async function idleReleases(env, engine) {
   const s = await boot({ ...IDLE, ...env });
@@ -214,6 +216,6 @@ describe('MCP server idle TTL', () => {
   });
 
   it('releases a Firefox browser too', { skip: hasFirefox ? false : 'firefox not installed' }, async () => {
-    await idleReleases({ BAREBROWSE_ENGINE: 'firefox' }, 'firefox');
+    await idleReleases({ SWIFTBROWSE_ENGINE: 'firefox' }, 'firefox');
   });
 });

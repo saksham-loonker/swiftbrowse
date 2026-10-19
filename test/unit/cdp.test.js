@@ -44,7 +44,7 @@ describe('launch()', { skip: browserSkip }, () => {
     const { existsSync } = await import('node:fs');
     const browser = await launch();
     const dir = browser.ownedProfileDir;
-    assert.ok(dir && dir.startsWith('/tmp/swiftbrowse-'),
+    assert.ok(dir && dir.includes('swiftbrowse-'),
       'launch should record the temp profile dir it created');
     assert.ok(existsSync(dir), 'profile dir should exist while browser runs');
     await cleanupBrowser(browser);
@@ -62,7 +62,7 @@ describe('launch()', { skip: browserSkip }, () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const fixture = join(here, '..', 'fixtures', 'launch-and-wait.mjs');
 
-    const child = spawn('node', [fixture], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const child = spawn('node', [fixture], { stdio: ['ignore', 'pipe', 'inherit', 'ipc'], windowsHide: true });
 
     // Read BROWSER_PID + PROFILE_DIR from the fixture's stdout
     const { browserPid, profileDir } = await new Promise((resolve, reject) => {
@@ -71,7 +71,7 @@ describe('launch()', { skip: browserSkip }, () => {
       child.stdout.on('data', (chunk) => {
         buf += chunk.toString();
         const pidMatch = buf.match(/BROWSER_PID:(\d+)/);
-        const dirMatch = buf.match(/PROFILE_DIR:(\S+)/);
+        const dirMatch = buf.match(/PROFILE_DIR:([^\r\n]+)/);
         if (pidMatch && dirMatch) {
           clearTimeout(timer);
           resolve({ browserPid: parseInt(pidMatch[1], 10), profileDir: dirMatch[1] });
@@ -88,7 +88,8 @@ describe('launch()', { skip: browserSkip }, () => {
     assert.doesNotThrow(() => process.kill(browserPid, 0), 'browser should be running');
 
     // SIGTERM the parent — our exit handler should reap the browser
-    child.kill('SIGTERM');
+    if (process.platform === 'win32') child.send('shutdown');
+    else child.kill('SIGTERM');
     await new Promise((resolve) => child.once('exit', resolve));
 
     // Give the kernel a beat for SIGKILL to propagate + dir to unlink

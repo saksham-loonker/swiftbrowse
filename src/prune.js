@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
 /**
  * prune.js — ARIA tree pruning for agent consumption.
  *

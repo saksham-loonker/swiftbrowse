@@ -171,7 +171,7 @@ describe('interact — data: URL fixture', () => {
     }
   });
 
-  it('link click + waitForNavigation navigates to new page', async () => {
+  it('link click + waitForNavigation navigates to new page', { skip: !process.env.SWIFTBROWSE_LIVE_TESTS }, async () => {
     // Use example.com with browse mode to get link refs (act mode prunes them)
     const page = await connect();
     try {
@@ -197,7 +197,7 @@ describe('interact — data: URL fixture', () => {
 
 // ===== Round 2: Google Search =====
 
-describe('interact — Google Search', () => {
+describe('interact — Google Search', { skip: !process.env.SWIFTBROWSE_LIVE_TESTS }, () => {
   it('search and navigate results', async () => {
     const page = await connect();
     try {
@@ -245,7 +245,7 @@ describe('interact — Google Search', () => {
 
 // ===== Round 3: Wikipedia =====
 
-describe('interact — Wikipedia', () => {
+describe('interact — Wikipedia', { skip: !process.env.SWIFTBROWSE_LIVE_TESTS }, () => {
   it('navigate article links', async () => {
     const page = await connect();
     try {
@@ -274,7 +274,7 @@ describe('interact — Wikipedia', () => {
 
 // ===== Round 4: GitHub (SPA) =====
 
-describe('interact — GitHub', () => {
+describe('interact — GitHub', { skip: !process.env.SWIFTBROWSE_LIVE_TESTS }, () => {
   it('navigate SPA repo links', async () => {
     const page = await connect();
     try {
@@ -303,7 +303,7 @@ describe('interact — GitHub', () => {
 
 // ===== Round 5: Craigslist (stable search form) =====
 
-describe('interact — Craigslist Search', () => {
+describe('interact — Craigslist Search', { skip: !process.env.SWIFTBROWSE_LIVE_TESTS }, () => {
   it('search query and verify results page', async () => {
     const page = await connect();
     try {
@@ -334,7 +334,7 @@ describe('interact — Craigslist Search', () => {
 
 // ===== Round 6: Hacker News (simple HTML, link navigation) =====
 
-describe('interact — Hacker News', () => {
+describe('interact — Hacker News', { skip: !process.env.SWIFTBROWSE_LIVE_TESTS }, () => {
   it('load homepage and navigate to a story', async () => {
     const page = await connect();
     try {
@@ -377,7 +377,7 @@ describe('interact — Hacker News', () => {
 
 // ===== Round 7: Reddit (old.reddit.com, better headless support) =====
 
-describe('interact — Reddit (old)', () => {
+describe('interact — Reddit (old)', { skip: !process.env.SWIFTBROWSE_LIVE_TESTS }, () => {
   it('load old.reddit.com and navigate to a post or subreddit', async () => {
     const page = await connect();
     try {
@@ -427,7 +427,7 @@ describe('interact — Reddit (old)', () => {
 
 // ===== Round 8: Cookie injection from Firefox =====
 
-describe('interact — Firefox cookie injection', () => {
+describe('interact — Firefox cookie injection', { skip: !process.env.SWIFTBROWSE_LIVE_TESTS }, () => {
   it('extract Firefox cookies and inject into CDP session', async () => {
     // Step 1: Extract Firefox cookies for github.com (best-effort)
     let cookies;

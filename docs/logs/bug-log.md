@@ -158,9 +158,9 @@ Also wrapped the stdin transport + `unhandledRejection` / `uncaughtException` / 
 **Symptom:** `connect()` API, daemon, CLI, and `bareagent` adapter all exposed `screenshot`/`wait_for`/`tabs`/`select`/`hover`/`reload` (and the powerful `eval` escape hatch in CLI/daemon), but the MCP server only registered 12 tools — none of these. Claude Desktop / Cursor / Code agents couldn't reach them at all, forcing snapshot-only workflows and round-trips through `back`/`forward` instead of `reload`.
 **Fix:** Added all six as MCP tools in `mcp-server.js` with matching schemas, hooked into the `TIMEOUTS` table from H5 (`reload`: 60s; `screenshot`: 45s; `wait_for`: 60s; `tabs`: 5s; `select`/`hover`: 15s). `screenshot` saves the image to `.swiftbrowse/screenshot-*.{png,jpeg,webp}` and returns the file path (consistent with the snapshot save-to-file convention; raw base64 in a JSON-RPC response would blow `maxChars`). `tabs` either returns the JSON list or accepts `switchTo: N` to switch — one tool, two behaviors. Mutating tools use `{ retry: false }` since `withRetry` would replay them on a fresh page.
 
-**eval is gated behind `BAREBROWSE_MCP_EVAL=1`** — default off. Per the H6 discussion, `Runtime.evaluate` in the user's authenticated session is the load-bearing risk: an LLM agent with eval can read cookies/`localStorage`, hit any same-origin endpoint, post on the user's behalf. CLI/connect() keep it because the developer is the caller; MCP exposes the same primitive to an agent acting with less judgment. The opt-in env var makes the operator make a deliberate choice. The tool is registered conditionally at module load, AND the handler re-checks the env var as a second line of defense.
+**eval is gated behind `SWIFTBROWSE_MCP_EVAL=1`** — default off. Per the H6 discussion, `Runtime.evaluate` in the user's authenticated session is the load-bearing risk: an LLM agent with eval can read cookies/`localStorage`, hit any same-origin endpoint, post on the user's behalf. CLI/connect() keep it because the developer is the caller; MCP exposes the same primitive to an agent acting with less judgment. The opt-in env var makes the operator make a deliberate choice. The tool is registered conditionally at module load, AND the handler re-checks the env var as a second line of defense.
 
-**Regression test:** `test/unit/mcp.test.js` — new "MCP tool surface (H6)" describe block. (1) Asserts every new tool name is in the exported `TOOLS` array. (2) Asserts `eval` is absent when `BAREBROWSE_MCP_EVAL` is unset (the normal test run). (3) Spawns a child node with `BAREBROWSE_MCP_EVAL=1` set and a one-shot probe that imports `mcp-server.js` and stdouts whether `eval` is registered — proves the opt-in actually flips the registration.
+**Regression test:** `test/unit/mcp.test.js` — new "MCP tool surface (H6)" describe block. (1) Asserts every new tool name is in the exported `TOOLS` array. (2) Asserts `eval` is absent when `SWIFTBROWSE_MCP_EVAL` is unset (the normal test run). (3) Spawns a child node with `SWIFTBROWSE_MCP_EVAL=1` set and a one-shot probe that imports `mcp-server.js` and stdouts whether `eval` is registered — proves the opt-in actually flips the registration.
 
 ---
 
@@ -238,18 +238,18 @@ Same pass also cleaned up two unrelated nits flagged by the same review: `mcp-se
 
 **Symptom:** A Claude window left open for days kept its `swiftbrowse mcp` server's headless browser alive (1–30h idle, ~1 GB each) long after the conversation moved on.
 **Root cause:** The browser lived as long as the server; nothing released it when no tool was being called.
-**Fix:** Idle TTL in `mcp-server.js`: `BAREBROWSE_IDLE_MINUTES` (default 15, `0` = off, invalid/negative → default, fractional allowed). Tracks in-flight `tools/call`s; the timer is stopped during a call and re-armed when it finishes; on fire, with nothing in flight and a page open, `resetPage()` closes it. Timer is `unref()`ed. The next call opens a fresh browser via `getPage()` (a new job, no resume). Uses only `page.close()`, so both engines work.
+**Fix:** Idle TTL in `mcp-server.js`: `SWIFTBROWSE_IDLE_MINUTES` (default 15, `0` = off, invalid/negative → default, fractional allowed). Tracks in-flight `tools/call`s; the timer is stopped during a call and re-armed when it finishes; on fire, with nothing in flight and a page open, `resetPage()` closes it. Timer is `unref()`ed. The next call opens a fresh browser via `getPage()` (a new job, no resume). Uses only `page.close()`, so both engines work.
 **Known, deliberately NOT fixed:** the server does not exit on stdin EOF (Claude already terminates its MCP servers); `kill -9` of a swiftbrowse process orphans its detached browser; download temp dirs survive a SIGTERM stop of library users.
 **Regression test:** `test/integration/mcp-lifecycle.test.js` — "releases the browser after the idle TTL and reopens on the next call", "does not cut off a call that outlasts the TTL", "releases a Firefox browser too" (red without the fix: browser count stays 1 after idle)
 
 ---
 
-## [2026-10-14] BAREBROWSE_IDLE_MINUTES parse: huge value closed the browser after every call, empty value disabled the TTL (M3)
+## [2026-10-14] SWIFTBROWSE_IDLE_MINUTES parse: huge value closed the browser after every call, empty value disabled the TTL (M3)
 
-**Symptom:** `BAREBROWSE_IDLE_MINUTES=50000` made the browser close right after every call (0 browsers 1.5s after a `goto`, confirmed on the live server). `BAREBROWSE_IDLE_MINUTES=` (empty/whitespace) silently turned the TTL off instead of using the 15-minute default.
+**Symptom:** `SWIFTBROWSE_IDLE_MINUTES=50000` made the browser close right after every call (0 browsers 1.5s after a `goto`, confirmed on the live server). `SWIFTBROWSE_IDLE_MINUTES=` (empty/whitespace) silently turned the TTL off instead of using the 15-minute default.
 **Root cause:** The parse was `Number(env ?? 15)` with a finite/non-negative check. (1) `50000 * 60_000` exceeds 2^31-1, so `setTimeout` overflows (TimeoutOverflowWarning) and fires after 1ms. (2) `Number('')` is `0`, which means "off".
 **Fix:** Exported pure helper `idleMs(raw)` in `mcp-server.js`: undefined/blank/non-finite/negative → 15 min; `0` → 0 (off); otherwise `min(n * 60_000, 2**31-1)`.
-**Regression test:** `test/unit/mcp.test.js` — "idleMs (BAREBROWSE_IDLE_MINUTES parse)" (red against the old formula for `''`, `'   '` and `'50000'`)
+**Regression test:** `test/unit/mcp.test.js` — "idleMs (SWIFTBROWSE_IDLE_MINUTES parse)" (red against the old formula for `''`, `'   '` and `'50000'`)
 
 ---
 

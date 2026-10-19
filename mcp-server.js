@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
 /**
  * mcp-server.js — MCP server for swiftbrowse.
  *
@@ -136,7 +138,7 @@ function resetPage() {
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
 // Idle TTL: a server can outlive its conversation by days, holding a browser
-// (GBs) the whole time. After BAREBROWSE_IDLE_MINUTES (default 15, 0 = off)
+// (GBs) the whole time. After SWIFTBROWSE_IDLE_MINUTES (default 15, 0 = off)
 // with no tools/call in flight, release it; the next call opens a fresh one.
 // Capped at setTimeout's max (2^31-1 ms, ~24.8 days): beyond it Node fires after 1ms.
 /**
@@ -156,7 +158,7 @@ export function idleMs(raw) {
   if (!Number.isFinite(n) || n < 0) return DEFAULT;
   return Math.min(n * 60_000, MAX_TIMER_MS);
 }
-const IDLE_MS = idleMs(process.env.BAREBROWSE_IDLE_MINUTES);
+const IDLE_MS = idleMs(process.env.SWIFTBROWSE_IDLE_MINUTES ?? process.env.BAREBROWSE_IDLE_MINUTES);
 let _inflight = 0;
 let _idleTimer = null;
 
@@ -170,16 +172,16 @@ function armIdle() {
 /**
  * The engine + mode this server is configured to use, derived from env WITHOUT
  * launching a browser. Both engines ship in the library; which one this server
- * drives is fixed at launch by BAREBROWSE_ENGINE and cannot change mid-session
+ * drives is fixed at launch by SWIFTBROWSE_ENGINE and cannot change mid-session
  * (one browser is connected and reused across tool calls). Surfaced to the
  * agent via `initialize.instructions`, the `capabilities` tool, and the `browse`
  * tool description so the Firefox engine is discoverable — it was invisible
  * before, and a session concluded (wrongly) that only Chromium was supported.
  */
 function engineInfo() {
-  const engine = process.env.BAREBROWSE_ENGINE === 'firefox' ? 'firefox' : 'chromium';
-  const mode = process.env.BAREBROWSE_MODE || 'hybrid';
-  const incognito = process.env.BAREBROWSE_INCOGNITO === '1';
+  const engine = (process.env.SWIFTBROWSE_ENGINE ?? process.env.BAREBROWSE_ENGINE) === 'firefox' ? 'firefox' : 'chromium';
+  const mode = (process.env.SWIFTBROWSE_MODE ?? process.env.BAREBROWSE_MODE) || 'hybrid';
+  const incognito = (process.env.SWIFTBROWSE_INCOGNITO ?? process.env.BAREBROWSE_INCOGNITO) === '1';
   return {
     activeEngine: engine,
     mode,
@@ -187,7 +189,7 @@ function engineInfo() {
     availableEngines: ['chromium', 'firefox'],
     // Engine is chosen once at server launch — the agent cannot switch it.
     switchEngine:
-      "To use the other engine, restart the MCP server with BAREBROWSE_ENGINE=firefox "
+      "To use the other engine, restart the MCP server with SWIFTBROWSE_ENGINE=firefox "
       + "(or unset it for the chromium default). It cannot be changed during a session.",
   };
 }
@@ -199,15 +201,15 @@ async function getPage() {
   // tool calls), so it's an env var, not a per-request flag. Firefox is driven
   // over WebDriver BiDi and, as of parity Phase 4, has the same hybrid fallback
   // as Chromium (relaunch headed on a bot-challenge page) — so it defaults to
-  // hybrid too, matching the Chromium default (override with BAREBROWSE_MODE).
+  // hybrid too, matching the Chromium default (override with SWIFTBROWSE_MODE).
   // A failed headed relaunch (no display) falls back to the headless result.
   // Incognito is a launch-time setting like engine/mode: the session persists
-  // across tool calls, so it's an env var (BAREBROWSE_INCOGNITO=1), not a
+  // across tool calls, so it's an env var (SWIFTBROWSE_INCOGNITO=1), not a
   // per-request flag. Skips all auth injection for a clean, logged-out session.
-  const incognito = process.env.BAREBROWSE_INCOGNITO === '1';
-  const connectOpts = process.env.BAREBROWSE_ENGINE === 'firefox'
-    ? { engine: 'firefox', mode: process.env.BAREBROWSE_MODE || 'hybrid', incognito }
-    : { mode: process.env.BAREBROWSE_MODE || 'hybrid', incognito };
+  const incognito = (process.env.SWIFTBROWSE_INCOGNITO ?? process.env.BAREBROWSE_INCOGNITO) === '1';
+  const connectOpts = (process.env.SWIFTBROWSE_ENGINE ?? process.env.BAREBROWSE_ENGINE) === 'firefox'
+    ? { engine: 'firefox', mode: (process.env.SWIFTBROWSE_MODE ?? process.env.BAREBROWSE_MODE) || 'hybrid', incognito }
+    : { mode: (process.env.SWIFTBROWSE_MODE ?? process.env.BAREBROWSE_MODE) || 'hybrid', incognito };
   _pageConnecting = connect(connectOpts);
   try {
     _page = await _pageConnecting;
@@ -234,6 +236,10 @@ function acquireAssessSlot() {
 
 
 export const TOOLS = [
+  { name: 'text', description: 'Read visible main-content text. Navigation and page chrome are excluded when possible.', inputSchema: { type: 'object', properties: { maxChars: { type: 'integer', minimum: 0 } } } },
+  { name: 'extract', description: 'Extract text or an attribute by CSS selector.', inputSchema: { type: 'object', properties: { selector: { type: 'string' }, all: { type: 'boolean' }, attr: { type: 'string' } }, required: ['selector'] } },
+  { name: 'links', description: 'List hyperlinks as href/text pairs, excluding javascript and data links.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'table', description: 'Extract a table as headers and rows.', inputSchema: { type: 'object', properties: { selector: { type: 'string' } } } },
   {
     name: 'browse',
     description: 'One-shot headless browse — fetches a URL through a real browser (executes JS, injects cookies, dismisses consent, evades bot detection). Only when plain HTTP fetch can\'t render the page. Returns a pruned ARIA snapshot with [ref=N] markers. Stateless — for multi-step interaction use goto.',
@@ -388,6 +394,7 @@ export const TOOLS = [
       type: 'object',
       properties: {
         format: { type: 'string', enum: ['png', 'jpeg', 'webp'], description: 'Image format (default: png)' },
+        selector: { type: 'string', description: 'Crop to a CSS selector' },
         quality: { type: 'number', description: 'JPEG/WebP quality 0-100 (default: 80, ignored for PNG)' },
       },
     },
@@ -447,11 +454,11 @@ export const TOOLS = [
 // Powerful escape hatch — guarded behind an explicit env-var opt-in.
 // Runtime.evaluate in the user's authenticated session lets an agent read
 // cookies/localStorage, dispatch arbitrary events, hit any endpoint, etc.
-// Off by default; flip BAREBROWSE_MCP_EVAL=1 to enable.
-if (process.env.BAREBROWSE_MCP_EVAL === '1') {
+// Off by default; flip SWIFTBROWSE_MCP_EVAL=1 to enable.
+if ((process.env.SWIFTBROWSE_MCP_EVAL ?? process.env.BAREBROWSE_MCP_EVAL) === '1') {
   TOOLS.push({
     name: 'eval',
-    description: 'Run a JavaScript expression in the current page and return the result. POWERFUL: full access to the authenticated session — DOM, cookies, localStorage, fetch. Enabled because BAREBROWSE_MCP_EVAL=1 is set.',
+    description: 'Run a JavaScript expression in the current page and return the result. POWERFUL: full access to the authenticated session — DOM, cookies, localStorage, fetch. Enabled because SWIFTBROWSE_MCP_EVAL=1 is set.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -481,6 +488,13 @@ if (assessFn) {
 
 async function handleToolCall(name, args) {
   switch (name) {
+    case 'text': case 'extract': case 'links': case 'table': return withRetry(async () => {
+      const page = await getPage();
+      if (name === 'text') return page.text({ maxChars: args.maxChars ?? MAX_CHARS_DEFAULT });
+      if (name === 'extract') return page.extract(args.selector, { all: args.all, attr: args.attr });
+      if (name === 'links') return page.links();
+      return page.table(args.selector);
+    }, TIMEOUTS.snapshot);
     case 'capabilities': {
       // Introspection only — must NOT launch a browser. Report the configured
       // engine from env; if a page is already connected, attach its live flags.
@@ -595,7 +609,7 @@ async function handleToolCall(name, args) {
     case 'screenshot': return withRetry(async () => {
       const page = await getPage();
       const format = args.format || 'png';
-      const b64 = await page.screenshot({ format, quality: args.quality });
+      const b64 = await page.screenshot({ format, quality: args.quality, selector: args.selector });
       mkdirSync(OUTPUT_DIR, { recursive: true, mode: 0o700 });
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       const file = join(OUTPUT_DIR, `screenshot-${ts}.${format}`);
@@ -628,11 +642,11 @@ async function handleToolCall(name, args) {
       return 'ok';
     }, TIMEOUTS.hover, { retry: false });
     case 'eval': {
-      // Only reachable when BAREBROWSE_MCP_EVAL=1 — the tool isn't registered
+      // Only reachable when SWIFTBROWSE_MCP_EVAL=1 — the tool isn't registered
       // otherwise, but this guard is the second line of defense in case the
       // env var changes between tools/list and tools/call.
-      if (process.env.BAREBROWSE_MCP_EVAL !== '1') {
-        throw new Error('eval is disabled. Set BAREBROWSE_MCP_EVAL=1 to enable.');
+      if ((process.env.SWIFTBROWSE_MCP_EVAL ?? process.env.BAREBROWSE_MCP_EVAL) !== '1') {
+        throw new Error('eval is disabled. Set SWIFTBROWSE_MCP_EVAL=1 to enable.');
       }
       return withRetry(async () => {
         const page = await getPage();

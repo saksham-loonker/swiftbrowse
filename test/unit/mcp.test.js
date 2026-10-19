@@ -9,10 +9,10 @@ import assert from 'node:assert/strict';
 import { readFileSync, statSync, unlinkSync } from 'node:fs';
 import { TIMEOUTS, TOOLS, saveSnapshot, idleMs, waitForDeadline } from '../../mcp-server.js';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join as joinPath } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const MCP_SERVER = joinPath(__dirname, '../../mcp-server.js');
+const MCP_SERVER = pathToFileURL(joinPath(__dirname, '../../mcp-server.js')).href;
 
 // Re-implement isTransient + withRetry locally (not exported from mcp-server.js)
 function isTransient(err) {
@@ -58,7 +58,7 @@ describe('MCP saveSnapshot', () => {
     }
   });
 
-  it('writes owner-only (0600) — snapshots can hold authenticated page content', () => {
+  it('writes owner-only (0600) — snapshots can hold authenticated page content', { skip: process.platform === 'win32' ? 'POSIX permissions use Windows ACLs here' : false }, () => {
     // Security regression guard: the real saveSnapshot must write 0600,
     // umask-independent, matching the daemon's invariant. A 0644 file would
     // leak logged-in page content to other local users on a shared host.
@@ -247,16 +247,16 @@ describe('MCP tool surface (H6)', () => {
     }
   });
 
-  it('eval is gated behind BAREBROWSE_MCP_EVAL=1 (default off)', () => {
+  it('eval is gated behind SWIFTBROWSE_MCP_EVAL=1 (default off)', () => {
     // The test runner inherits a clean env; eval must NOT be registered here.
     // Powerful primitive: Runtime.evaluate in an authenticated session can
     // read cookies/localStorage, post on user's behalf, exfiltrate. Default
     // off, opt-in via env var.
     assert.ok(!toolNames.includes('eval'),
-      'eval must be absent when BAREBROWSE_MCP_EVAL is unset — opt-in only');
+      'eval must be absent when SWIFTBROWSE_MCP_EVAL is unset — opt-in only');
   });
 
-  it('eval IS registered when BAREBROWSE_MCP_EVAL=1', () => {
+  it('eval IS registered when SWIFTBROWSE_MCP_EVAL=1', () => {
     // Spawn a one-shot node child with the env var set so a fresh module
     // graph evaluates the gating code path.
     const probe = `
@@ -267,9 +267,9 @@ describe('MCP tool surface (H6)', () => {
     `;
     const out = execFileSync(process.execPath,
       ['--input-type=module', '-e', probe],
-      { env: { ...process.env, BAREBROWSE_MCP_EVAL: '1' }, encoding: 'utf8' });
+      { env: { ...process.env, SWIFTBROWSE_MCP_EVAL: '1' }, encoding: 'utf8' });
     assert.equal(out, 'yes',
-      'with BAREBROWSE_MCP_EVAL=1 the eval tool must be registered');
+      'with SWIFTBROWSE_MCP_EVAL=1 the eval tool must be registered');
   });
 
   it('the JSON-RPC loop actually starts when invoked via cli.js mcp (regression)', async () => {
@@ -317,7 +317,7 @@ describe('MCP tool surface (H6)', () => {
 });
 
 // Engine discoverability over MCP: the Firefox engine is selectable only at
-// server launch (BAREBROWSE_ENGINE), which a running agent can't see. These
+// server launch (SWIFTBROWSE_ENGINE), which a running agent can't see. These
 // assert the three surfaces that now advertise it so an agent stops concluding
 // (wrongly) that only Chromium exists.
 describe('MCP engine visibility', () => {
@@ -387,18 +387,18 @@ describe('MCP engine visibility', () => {
     assert.equal(info.connected, false, 'introspection must not have launched a browser');
   });
 
-  it('capabilities flips to firefox under BAREBROWSE_ENGINE=firefox', async () => {
+  it('capabilities flips to firefox under SWIFTBROWSE_ENGINE=firefox', async () => {
     const got = await rpc(
       [{ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'capabilities', arguments: {} } }],
-      { BAREBROWSE_ENGINE: 'firefox' },
+      { SWIFTBROWSE_ENGINE: 'firefox' },
     );
     const info = JSON.parse(callText(got[1]));
     assert.equal(info.activeEngine, 'firefox',
-      'BAREBROWSE_ENGINE=firefox must be reported as the active engine');
+      'SWIFTBROWSE_ENGINE=firefox must be reported as the active engine');
   });
 });
 
-describe('idleMs (BAREBROWSE_IDLE_MINUTES parse)', () => {
+describe('idleMs (SWIFTBROWSE_IDLE_MINUTES parse)', () => {
   const cases = [
     [undefined, 900000], ['', 900000], ['   ', 900000], ['0', 0], ['abc', 900000],
     ['-5', 900000], ['0.05', 3000], ['15', 900000], ['50000', 2147483647],

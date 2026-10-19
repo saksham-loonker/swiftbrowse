@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
 /**
  * stealth-firefox.js — Anti-detection patches for headless Firefox (BiDi).
  *

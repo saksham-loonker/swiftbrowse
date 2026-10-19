@@ -51,7 +51,7 @@ describe('browse()', () => {
     assert.equal(snapshot.includes('documentation examples'), false, 'should drop paragraph text');
   });
 
-  it('handles complex pages with significant token reduction', async () => {
+  it('handles complex pages with significant token reduction', { skip: !process.env.SWIFTBROWSE_LIVE_TESTS }, async () => {
     const pruned = await browse('https://news.ycombinator.com');
     const raw = await browse('https://news.ycombinator.com', { prune: false });
     const reduction = 1 - (pruned.length / raw.length);
@@ -75,7 +75,7 @@ describe('browse()', () => {
   it('snapshot starts with URL line', async () => {
     const snapshot = await browse(example.url);
     const firstLine = snapshot.split('\n')[0];
-    assert.equal(firstLine, `url: ${example.url}`, 'first line should be the page URL');
+    assert.equal(firstLine, `url: ${new URL(example.url).href}`, 'first line should be the page URL');
   });
 });
 
@@ -98,9 +98,9 @@ describe('connect()', () => {
       const snap1 = await page.snapshot();
       assert.ok(snap1.includes('Example Domain'));
 
-      await page.goto('https://news.ycombinator.com');
+      await page.goto('data:text/html,<h1>Second Page</h1>');
       const snap2 = await page.snapshot();
-      assert.ok(snap2.includes('Hacker News'));
+      assert.ok(snap2.includes('Second Page'));
     } finally {
       await page.close();
     }

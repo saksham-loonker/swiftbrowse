@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
 /**
  * session-client.js -- HTTP client to talk to the daemon.
  *
@@ -19,7 +21,11 @@ export function readSession(outputDir) {
   const sessionPath = join(resolve(outputDir), SESSION_FILE);
   if (!existsSync(sessionPath)) return null;
   try {
-    return JSON.parse(readFileSync(sessionPath, 'utf8'));
+    const data = JSON.parse(readFileSync(sessionPath, 'utf8'));
+    if (!data || !Number.isInteger(data.port) || data.port < 1 || data.port > 65535 ||
+        !Number.isInteger(data.pid) || data.pid < 1 ||
+        (data.token !== undefined && !/^[a-f0-9]{64}$/.test(data.token))) return null;
+    return data;
   } catch {
     return null;
   }

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
 /**
  * daemon.js -- Background HTTP server holding a connect() session.
  *
@@ -7,7 +9,7 @@
 
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { writeFileSync, mkdirSync, existsSync, readFileSync, unlinkSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, readFileSync, unlinkSync, openSync, closeSync } from 'node:fs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { connect } from './index.js';
@@ -30,6 +32,16 @@ function tokenMatches(expected, got) {
 }
 
 const SESSION_FILE = 'session.json';
+const MAX_LOG_ENTRIES = 10000;
+function pushBounded(log, entry) {
+  if (log.length >= MAX_LOG_ENTRIES) log.shift();
+  log.push(entry);
+}
+function rememberRequest(pending, id, entry) {
+  if (pending.size >= MAX_LOG_ENTRIES) pending.delete(pending.keys().next().value);
+  pending.set(id, entry);
+}
+
 
 /**
  * Build the argv for the detached daemon child. Pure + exported so the
@@ -119,7 +131,7 @@ export async function attachBiDiCapture(bidi, { consoleLogs, networkLogs, pendin
   ]);
 
   bidi.on('log.entryAdded', (e) => {
-    consoleLogs.push({
+    pushBounded(consoleLogs, {
       // Map BiDi's console method (or level for uncaught JS errors) to CDP's
       // `type` vocabulary so `console-logs --level warning` matches on both
       // engines — BiDi says 'warn', CDP says 'warning'.
@@ -136,7 +148,7 @@ export async function attachBiDiCapture(bidi, { consoleLogs, networkLogs, pendin
   });
 
   bidi.on('network.beforeRequestSent', (e) => {
-    pendingRequests.set(e.request.request, {
+    rememberRequest(pendingRequests, e.request.request, {
       url: e.request.url,
       method: e.request.method,
       timestamp: new Date().toISOString(),
@@ -146,7 +158,7 @@ export async function attachBiDiCapture(bidi, { consoleLogs, networkLogs, pendin
   bidi.on('network.responseCompleted', (e) => {
     const req = pendingRequests.get(e.request.request);
     if (req) {
-      networkLogs.push({
+      pushBounded(networkLogs, {
         ...req,
         status: e.response.status,
         statusText: e.response.statusText,
@@ -159,7 +171,7 @@ export async function attachBiDiCapture(bidi, { consoleLogs, networkLogs, pendin
   bidi.on('network.fetchError', (e) => {
     const req = pendingRequests.get(e.request.request);
     if (req) {
-      networkLogs.push({ ...req, status: 0, error: e.errorText });
+      pushBounded(networkLogs, { ...req, status: 0, error: e.errorText });
       pendingRequests.delete(e.request.request);
     }
   });
@@ -180,11 +192,20 @@ export async function startDaemon(opts, outputDir, initialUrl) {
   // Build child args (pure + testable — see buildDaemonArgs).
   const args = buildDaemonArgs(opts, absDir, initialUrl, join(import.meta.dirname, '..', 'cli.js'));
 
-  const child = spawn(process.execPath, args, {
-    detached: true,
-    stdio: 'ignore',
-    env: { ...process.env },
-  });
+  const logPath = join(absDir, 'daemon.log');
+  const logFd = openSync(logPath, 'w', 0o600);
+  let child;
+  try {
+    child = spawn(process.execPath, args, {
+      detached: true, windowsHide: true,
+      stdio: ['ignore', logFd, logFd], env: { ...process.env },
+    });
+  } finally {
+    closeSync(logFd);
+  }
+  /** @type {Error|null} */
+  let startupError = null;
+  child.on('error', err => { startupError = err; });
   child.unref();
 
   // Poll for session.json (50ms interval, 30s timeout). 30s covers cold
@@ -193,6 +214,7 @@ export async function startDaemon(opts, outputDir, initialUrl) {
   // CDP setup time pushed real boots past it on stress runs.
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
+    if (startupError || child.exitCode !== null) break;
     if (existsSync(sessionPath)) {
       try {
         const data = JSON.parse(readFileSync(sessionPath, 'utf8'));
@@ -201,7 +223,10 @@ export async function startDaemon(opts, outputDir, initialUrl) {
     }
     await new Promise((r) => setTimeout(r, 50));
   }
-  throw new Error('Daemon failed to start within 30s');
+  try { child.kill(); } catch {}
+  let log = '';
+  try { log = readFileSync(logPath, 'utf8').slice(-2000); } catch {}
+  throw new Error(`Daemon failed to start${startupError ? ': ' + /** @type {Error} */ (startupError).message : ' within 30s'}${log ? '\n' + log : ''}`);
 }
 
 /**
@@ -249,7 +274,7 @@ export async function runDaemon(opts, outputDir, initialUrl) {
   if (page.cdp) {
     await page.cdp.send('Runtime.enable');
     page.cdp.on('Runtime.consoleAPICalled', (params) => {
-      consoleLogs.push({
+      pushBounded(consoleLogs, {
         type: params.type,
         timestamp: new Date().toISOString(),
         args: params.args.map((a) => a.value ?? a.description ?? a.type),
@@ -258,7 +283,7 @@ export async function runDaemon(opts, outputDir, initialUrl) {
 
     // Network log capture (Network.enable already called by connect)
     page.cdp.on('Network.requestWillBeSent', (params) => {
-      pendingRequests.set(params.requestId, {
+      rememberRequest(pendingRequests, params.requestId, {
         url: params.request.url,
         method: params.request.method,
         timestamp: new Date().toISOString(),
@@ -268,7 +293,7 @@ export async function runDaemon(opts, outputDir, initialUrl) {
     page.cdp.on('Network.responseReceived', (params) => {
       const req = pendingRequests.get(params.requestId);
       if (req) {
-        networkLogs.push({
+        pushBounded(networkLogs, {
           ...req,
           status: params.response.status,
           statusText: params.response.statusText,
@@ -281,7 +306,7 @@ export async function runDaemon(opts, outputDir, initialUrl) {
     page.cdp.on('Network.loadingFailed', (params) => {
       const req = pendingRequests.get(params.requestId);
       if (req) {
-        networkLogs.push({
+        pushBounded(networkLogs, {
           ...req,
           status: 0,
           error: params.errorText,
@@ -580,14 +605,15 @@ export async function runDaemon(opts, outputDir, initialUrl) {
     // eval expression / typed text.
     const MAX_BODY = 16 * 1024 * 1024;
     let body = '';
+    let size = 0;
     for await (const chunk of req) {
-      body += chunk;
-      if (body.length > MAX_BODY) {
+      size += Buffer.byteLength(chunk);
+      if (size > MAX_BODY) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: 'Request body too large' }));
-        req.destroy();
         return;
       }
+      body += chunk;
     }
 
     let parsed;
@@ -599,7 +625,12 @@ export async function runDaemon(opts, outputDir, initialUrl) {
       return;
     }
 
-    const { command, args } = parsed || {};
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || (parsed.args !== undefined && (!parsed.args || typeof parsed.args !== 'object' || Array.isArray(parsed.args)))) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'Expected an object with command and object args' }));
+      return;
+    }
+    const { command, args } = parsed;
     const handler = typeof command === 'string' && Object.hasOwn(handlers, command) ? handlers[command] : null;
     if (!handler) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -650,10 +681,13 @@ export async function runDaemon(opts, outputDir, initialUrl) {
   }));
 
   // Handle SIGTERM gracefully
-  process.on('SIGTERM', async () => {
+  const shutdown = async () => {
     try { await page.close(); } catch { /* already closed */ }
     if (existsSync(sessionPath)) unlinkSync(sessionPath);
     server.close();
     process.exit(0);
-  });
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
 }
+

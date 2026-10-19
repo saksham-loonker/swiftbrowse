@@ -71,7 +71,7 @@ describe('page.readable()', () => {
     }
   });
 
-  it('extracts a real-world article (Wikipedia)', async () => {
+  it('extracts a real-world article (Wikipedia)', { skip: !process.env.SWIFTBROWSE_LIVE_TESTS }, async () => {
     const page = await connect({ mode: 'headless' });
     try {
       await page.goto('https://en.wikipedia.org/wiki/Web_scraping', 45000);

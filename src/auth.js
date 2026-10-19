@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
 /**
- * auth.js â€” Cookie extraction from browser profiles + CDP injection.
+ * auth.js — Cookie extraction from browser profiles + CDP injection.
  *
  * Extracts cookies from Chromium/Firefox SQLite databases,
  * decrypts Chromium cookies via OS keyring or DPAPI,
@@ -12,9 +14,9 @@
 import { DatabaseSync } from 'node:sqlite';
 import { pbkdf2Sync, createDecipheriv } from 'node:crypto';
 import { execSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, copyFileSync, unlinkSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
-import { join, basename } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 const IS_WIN = process.platform === 'win32';
 const IS_MAC = process.platform === 'darwin';
@@ -98,7 +100,7 @@ export function findFirefoxCookieDb() {
 // --- Chromium cookie decryption ---
 
 // ============================================================
-// Windows â€” DPAPI-wrapped AES-256-GCM key stored in Local State
+// Windows — DPAPI-wrapped AES-256-GCM key stored in Local State
 // ============================================================
 
 /**
@@ -130,7 +132,7 @@ function getWindowsChromeKey(browser) {
   // Strip DPAPI prefix (first 5 bytes: "DPAPI")
   const encryptedKey = Buffer.from(encryptedKeyB64, 'base64').subarray(5);
 
-  // Use PowerShell to invoke DPAPI (CryptUnprotectData) â€” no native Node binding needed
+  // Use PowerShell to invoke DPAPI (CryptUnprotectData) — no native Node binding needed
   const b64 = encryptedKey.toString('base64');
   const script = `[Convert]::ToBase64String([System.Security.Cryptography.ProtectedData]::Unprotect([Convert]::FromBase64String('${b64}'), $null, 'CurrentUser'))`;
   const result = execSync(`powershell -NoProfile -NonInteractive -Command "${script}"`, {
@@ -142,7 +144,7 @@ function getWindowsChromeKey(browser) {
 }
 
 /**
- * Decrypt a Windows Chrome v10/v20 AES-256-GCM cookie.
+ * Decrypt a Windows Chrome v10/v11 AES-256-GCM cookie.
  * Format: v10 + 12-byte nonce + ciphertext + 16-byte auth tag.
  * @param {Uint8Array} encrypted
  * @param {Buffer} aesKey - 32-byte key from DPAPI
@@ -153,10 +155,10 @@ function decryptWindowsCookie(encrypted, aesKey) {
   if (buf.length === 0) return '';
 
   const prefix = buf.subarray(0, 3).toString('ascii');
-  if (prefix !== 'v10' && prefix !== 'v20') {
-    // Not AES-GCM â€” may be DPAPI-encrypted directly (older Chrome)
+  if (prefix !== 'v10' && prefix !== 'v11') {
+    // Not AES-GCM — may be DPAPI-encrypted directly (older Chrome)
     // Fall back to returning as UTF-8; caller catches errors
-    return buf.toString('utf8');
+    throw new Error('Unsupported Windows cookie encryption; attach to a logged-in browser instead');
   }
 
   const nonce = buf.subarray(3, 15);           // 12 bytes
@@ -169,7 +171,7 @@ function decryptWindowsCookie(encrypted, aesKey) {
 }
 
 // ============================================================
-// macOS â€” Keychain + AES-128-CBC (1003 PBKDF2 iterations)
+// macOS — Keychain + AES-128-CBC (1003 PBKDF2 iterations)
 // ============================================================
 
 /**
@@ -197,7 +199,7 @@ function getMacChromePassword(browser) {
 }
 
 // ============================================================
-// Linux â€” KWallet / libsecret + AES-128-CBC (1 PBKDF2 iteration)
+// Linux — KWallet / libsecret + AES-128-CBC (1 PBKDF2 iteration)
 // ============================================================
 
 /**
@@ -280,26 +282,16 @@ export function extractChromiumCookies(dbPath, browser, domain) {
     aesKey = deriveKey(password);
   }
 
-  // Copy to temp to avoid WAL lock issues with live browser databases.
-  // node:sqlite does not support file:// URIs on Windows â€” plain paths only.
-  const tmpPath = join(tmpdir(), `swiftbrowse-chrome-${basename(dbPath)}-${Date.now()}.tmp`);
-  copyFileSync(dbPath, tmpPath);
   let rows;
+  const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
-    const db = new DatabaseSync(tmpPath, { readOnly: true });
     let sql = `SELECT host_key, name, value, encrypted_value, path,
-      CAST(expires_utc AS TEXT) AS expires_utc, is_secure, is_httponly, samesite
-      FROM cookies`;
+      CAST(expires_utc AS TEXT) AS expires_utc, is_secure, is_httponly, samesite FROM cookies`;
     const params = [];
-    if (domain) {
-      sql += ` WHERE host_key LIKE ?`;
-      params.push(`%${domain}%`);
-    }
-    const stmt = db.prepare(sql);
-    rows = params.length ? stmt.all(...params) : stmt.all();
-    db.close();
+    if (domain) { sql += ' WHERE host_key LIKE ?'; params.push(`%${domain}%`); }
+    rows = db.prepare(sql).all(...params);
   } finally {
-    try { unlinkSync(tmpPath); } catch { /* ignore */ }
+    db.close();
   }
 
   const SAMESITE = { 0: 'None', 1: 'Lax', 2: 'Strict' };
@@ -333,7 +325,7 @@ export function extractChromiumCookies(dbPath, browser, domain) {
         expires = Number((expiresUtc - CHROME_EPOCH) / 1000000n);
       }
     } catch {
-      // BigInt conversion failed â€” treat as session cookie
+      // BigInt conversion failed — treat as session cookie
     }
 
     return {
@@ -356,25 +348,15 @@ export function extractChromiumCookies(dbPath, browser, domain) {
  * @returns {Array<object>} Cookies in CDP Network.setCookie format
  */
 export function extractFirefoxCookies(dbPath, domain) {
-  // Copy to temp to avoid WAL lock issues with live browser databases.
-  // node:sqlite does not support file:// URIs on Windows â€” plain paths only.
-  const tmpPath = join(tmpdir(), `swiftbrowse-firefox-${basename(dbPath)}-${Date.now()}.tmp`);
-  copyFileSync(dbPath, tmpPath);
   let rows;
+  const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
-    const db = new DatabaseSync(tmpPath, { readOnly: true });
-    let sql = `SELECT host, name, value, path, expiry, isSecure, isHttpOnly, sameSite
-      FROM moz_cookies`;
+    let sql = 'SELECT host, name, value, path, expiry, isSecure, isHttpOnly, sameSite FROM moz_cookies';
     const params = [];
-    if (domain) {
-      sql += ` WHERE host LIKE ?`;
-      params.push(`%${domain}%`);
-    }
-    const stmt = db.prepare(sql);
-    rows = params.length ? stmt.all(...params) : stmt.all();
-    db.close();
+    if (domain) { sql += ' WHERE host LIKE ?'; params.push(`%${domain}%`); }
+    rows = db.prepare(sql).all(...params);
   } finally {
-    try { unlinkSync(tmpPath); } catch { /* ignore */ }
+    db.close();
   }
 
   const SAMESITE = { 0: 'None', 1: 'Lax', 2: 'Strict' };
@@ -423,17 +405,25 @@ export function extractCookies(opts = {}) {
 
   // Auto: try all browsers, merge (last-write-wins by name+domain)
   const all = new Map();
-  const chromium = findChromiumCookieDb();
-  if (chromium) {
-    for (const c of extractChromiumCookies(chromium.path, chromium.browser, domain))
-      all.set(`${c.name}@${c.domain}`, c);
+  let found = false;
+  for (const [name, path] of Object.entries(CHROMIUM_PATHS)) {
+    if (name === 'chromeNet') continue;
+    const networkPath = join(path, '..', 'Network', 'Cookies');
+    const source = existsSync(networkPath) ? networkPath : path;
+    if (!existsSync(source)) continue;
+    try {
+      for (const c of extractChromiumCookies(source, name, domain)) all.set(`${c.name}@${c.domain}${c.path}`, c);
+      found = true;
+    } catch { /* A locked/unreadable browser must not hide other cookie sources. */ }
   }
   const firefox = findFirefoxCookieDb();
   if (firefox) {
-    for (const c of extractFirefoxCookies(firefox, domain))
-      all.set(`${c.name}@${c.domain}`, c);
+    try {
+      for (const c of extractFirefoxCookies(firefox, domain)) all.set(`${c.name}@${c.domain}${c.path}`, c);
+      found = true;
+    } catch { /* Continue with any readable Chromium cookies. */ }
   }
-  if (all.size === 0) throw new Error('No browser cookie database found');
+  if (!found) throw new Error('No browser cookie database found');
   return [...all.values()];
 }
 
@@ -461,7 +451,7 @@ export async function injectCookies(session, cookies) {
 /**
  * RFC 6265 domain-match: does `host` belong to a cookie declared for
  * `cookieDomain`? Leading dot on the cookie domain is ignored (host-only
- * vs domain cookies are matched the same here, intentionally â€” we want
+ * vs domain cookies are matched the same here, intentionally — we want
  * parent-domain cookies like .google.com to apply to mail.google.com).
  * @param {string} host - target hostname (e.g. 'mail.google.com')
  * @param {string} cookieDomain - cookie's host_key (e.g. '.google.com')
@@ -477,12 +467,12 @@ export function cookieDomainMatch(host, cookieDomain) {
 /**
  * Select the user's cookies that are in-scope for `url`. Shared by BOTH engines
  * (CDP `authenticate` and Firefox/BiDi `injectCookies`) so they can't drift on
- * scoping â€” a divergence here re-opens loading the entire cookie jar into an
+ * scoping — a divergence here re-opens loading the entire cookie jar into an
  * agent session. Returns the filtered cookie array; never injects.
  *
  * Coarse SQL pre-filter strips to a registrable-ish domain so the LIKE query
  * returns a superset (incl. parent-domain cookies). slice(-2) is a cheap
- * heuristic â€” it over-selects for multi-part eTLDs (co.uk) and as a substring
+ * heuristic — it over-selects for multi-part eTLDs (co.uk) and as a substring
  * match, so the precise RFC-6265 domain-match is what actually decides which
  * cookies pass. Without it, browsing apple.com would match apple.com.evil.org
  * and every *.co.uk site (verified).

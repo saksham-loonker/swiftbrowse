@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
 // @ts-nocheck — AX_FN below is browser-context code (document, getComputedStyle,
 // CSS, real regex literals) serialized via .toString() and run inside Firefox,
 // never in Node. tsc's Node lib (no DOM) can't meaningfully check it, and the

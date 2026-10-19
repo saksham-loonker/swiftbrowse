@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
 /**
  * output-clean.js -- Age-based cleanup of swiftbrowse's own output files.
  *
@@ -12,7 +14,7 @@ import { join } from 'node:path';
 // `screenshot-2026-01-01.png` in a shared --output-dir is never matched.
 const STAMP = '\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z';
 const OURS = new RegExp(
-  `^(?:page-${STAMP}\\.(?:yml|pdf)|screenshot-${STAMP}\\.(?:png|jpeg|webp)|article-${STAMP}\\.txt|(?:console|network|dialogs)-${STAMP}\\.json)$`,
+  `^(?:(?:page|batch)-${STAMP}\\.(?:yml|pdf)|screenshot-${STAMP}\\.(?:png|jpeg|webp)|(?:article|text)-${STAMP}\\.txt|(?:console|network|dialogs|table|links)-${STAMP}\\.json)$`,
 );
 
 /**

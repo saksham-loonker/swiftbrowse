@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
+import { killTreeSync } from './process-tree.js';
 /**
  * chromium.js — Find, launch, and connect to Chromium-based browsers.
  *
@@ -27,8 +30,7 @@ function reapAllSync() {
   // gives each Chromium its own pgid, so -pid targets every renderer/GPU/
   // network child without touching Node or its other children).
   for (const b of toReap) {
-    try { if (!b.process.killed) b.process.kill('SIGKILL'); } catch {}
-    try { process.kill(-b.process.pid, 'SIGKILL'); } catch {}
+    killTreeSync(b.process);
   }
   // Then poll each for actual death before removing its profile dir —
   // Chromium can hold file handles briefly even after SIGKILL, which would
@@ -39,7 +41,7 @@ function reapAllSync() {
       sleepSync(50);
     }
     if (b.ownedProfileDir) {
-      try { rmSync(b.ownedProfileDir, { recursive: true, force: true }); } catch {}
+      try { rmSync(b.ownedProfileDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch {}
     }
   }
 }
@@ -217,19 +219,28 @@ export async function launch(opts = {}) {
     windowsHide: !opts.headed,
   });
 
+  child.stdout.resume();
+
   // Parse the WebSocket URL from stderr
   // Chrome prints: "DevTools listening on ws://127.0.0.1:PORT/devtools/browser/UUID"
-  const wsUrl = await new Promise((resolve, reject) => {
+  let wsUrl;
+  try {
+  wsUrl = await new Promise((resolve, reject) => {
     let stderr = '';
     const timeout = setTimeout(() => {
       reject(new Error(`Browser failed to start within 10s. stderr: ${stderr}`));
     }, 10000);
 
     child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
+      stderr = (stderr + chunk.toString()).slice(-65536);
       const match = stderr.match(/ws:\/\/[^\s]+/);
       if (match) {
         clearTimeout(timeout);
+        const endpoint = new URL(match[0]);
+        if (endpoint.protocol !== 'ws:' || !['127.0.0.1', '[::1]', 'localhost'].includes(endpoint.hostname)) {
+          reject(new Error('Browser reported a non-loopback debugging endpoint'));
+          return;
+        }
         resolve(match[0]);
       }
     });
@@ -246,6 +257,11 @@ export async function launch(opts = {}) {
       }
     });
   });
+
+  } catch (err) {
+    await cleanupBrowser({ process: child, ownedProfileDir });
+    throw err;
+  }
 
   // Extract port from wsUrl
   const actualPort = parseInt(new URL(wsUrl).port, 10);
@@ -277,7 +293,8 @@ export async function cleanupBrowser(browser) {
       const timer = setTimeout(resolve, 2000);
       browser.process.once('exit', () => { clearTimeout(timer); resolve(); });
     });
-    try { browser.process.kill(); } catch {}
+    if (process.platform === 'win32') killTreeSync(browser.process);
+    else try { browser.process.kill(); } catch {}
     await exited;
     // SIGKILL the whole Chromium process group. The parent may have exited
     // already (above) but renderer/GPU/network children — separate processes

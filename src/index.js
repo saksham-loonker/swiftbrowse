@@ -1,5 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
+import { parseViewport } from './viewport.js';
 /**
- * swiftbrowse â€” Authenticated web browsing for autonomous agents via CDP.
+ * swiftbrowse — Authenticated web browsing for autonomous agents via CDP.
  *
  * One package. One import. Three modes.
  *
@@ -29,12 +32,12 @@ import { withTimeout } from './with-timeout.js';
 import { readable as extractReadable } from './readable.js';
 import { normalizeUrl, assertNavigable, assertUploadAllowed } from './url-guard.js';
 import { join as pathJoin } from 'node:path';
-import { chmodSync } from 'node:fs';
+import { chmodSync, rmSync } from 'node:fs';
 import { createScrapingTools } from './scrape.js';
 
 /**
  * Browse a URL and return an ARIA snapshot.
- * This is the primary API â€” URL in, agent-ready snapshot out.
+ * This is the primary API — URL in, agent-ready snapshot out.
  *
  * @param {string} url - The URL to browse
  * @param {object} [opts]
@@ -50,16 +53,18 @@ import { createScrapingTools } from './scrape.js';
  * @param {string[]} [opts.blockUrls] - Extra URL glob patterns to block,
  *   merged with the default unless blockAds:false.
  * @param {boolean} [opts.allowLocalUrls=false] - Permit navigation to local-
- *   resource schemes (file:, view-source:, chrome:, â€¦). Blocked by default.
+ *   resource schemes (file:, view-source:, chrome:, …). Blocked by default.
  * @param {boolean} [opts.blockPrivateNetwork=false] - Reject navigation to
  *   loopback / RFC-1918 / link-local / cloud-metadata hosts (SSRF guard).
  * @param {string} [opts.proxy] - Proxy server (e.g. 'http://host:port').
  * @param {string} [opts.binary] - Path to browser binary (auto-detected if omitted).
  * @param {string} [opts.userDataDir] - Browser profile directory.
- * @param {{width: number, height: number}} [opts.viewport] - Viewport dimensions.
+ * @param {string|{width: number, height: number}} [opts.viewport] - Viewport dimensions.
  * @param {string} [opts.browser] - Source browser for cookie extraction.
  * @param {boolean} [opts.consent=true] - Auto-dismiss cookie consent dialogs.
  * @param {'act'|'browse'|'navigate'|'full'|'read'} [opts.pruneMode='act'] - Pruning mode.
+ * @param {'chromium'|'firefox'} [opts.engine] - Browser engine. Auto-detected when omitted.
+ * @param {number} [opts.port] - Attach to an existing Chromium debug port.
  * @returns {Promise<string>} ARIA snapshot text
  */
 export async function browse(url, opts = {}) {
@@ -79,11 +84,11 @@ export async function browse(url, opts = {}) {
 
 /**
  * The interactive page handle returned by {@link connect}. Inferred structurally
- * from the returned object literals â€” no hand-maintained interface to drift.
+ * from the returned object literals — no hand-maintained interface to drift.
  *
  * It is a union of the two engine page shapes (Chromium/CDP and Firefox/BiDi),
  * which share every interaction method (`goto`, `snapshot`, `click`, `type`,
- * `close`, â€¦) but differ in their escape hatches â€” `cdp`/`createTab`/`dialogLog`
+ * `close`, …) but differ in their escape hatches — `cdp`/`createTab`/`dialogLog`
  * on Chromium, `bidi`/`context` on Firefox. The shared methods dereference
  * without narrowing; an engine-specific hatch requires knowing the engine
  * (the default is Chromium), e.g. `if ('cdp' in page) page.cdp.send(...)`.
@@ -94,7 +99,7 @@ export async function browse(url, opts = {}) {
  */
 
 /**
- * Description of what the current session can do â€” engine, mode, and the
+ * Description of what the current session can do — engine, mode, and the
  * mode/engine-derived feature flags that actually differ between sessions. Read
  * it via `page.capabilities` instead of inferring from the engine name. All
  * fields are launch-fixed engine/mode facts except `stealth`, which reflects
@@ -111,7 +116,7 @@ export async function browse(url, opts = {}) {
  * @property {'cdp'|'bidi'} escapeHatch - Name of the raw-protocol escape-hatch property
  * @property {boolean} reloadIgnoreCache - `reload({ignoreCache})` is honored
  * @property {boolean} downloads - `page.downloads` is populated
- * @property {boolean} stealth - Headless anti-detection is currently active (live â€” reflects present headed/headless state, not just launch mode)
+ * @property {boolean} stealth - Headless anti-detection is currently active (live — reflects present headed/headless state, not just launch mode)
  * @property {boolean} cookieInjection - Cookie extraction/injection is active (off in incognito)
  */
 
@@ -148,12 +153,12 @@ export async function browse(url, opts = {}) {
  *   patterns via CDP. Defaults to true for launched browsers, false in
  *   attach mode (would affect any tab attached to the user's running
  *   session). Setting blockAds:true explicitly in attach mode honors the
- *   request â€” blocking applies to whichever tab the session is currently
+ *   request — blocking applies to whichever tab the session is currently
  *   attached to and follows the session across switchTab() until close.
  * @param {string[]} [opts.blockUrls] - Extra URL glob patterns to block,
  *   merged with the default unless blockAds is false.
  * @param {boolean} [opts.allowLocalUrls=false] - Permit navigation to local-
- *   resource schemes (file:, view-source:, chrome:, â€¦). Blocked by default
+ *   resource schemes (file:, view-source:, chrome:, …). Blocked by default
  *   because a prompt-injected agent could use them to read local files.
  * @param {boolean} [opts.blockPrivateNetwork=false] - Reject navigation to
  *   loopback / RFC-1918 / link-local / cloud-metadata hosts (SSRF guard).
@@ -164,7 +169,7 @@ export async function browse(url, opts = {}) {
  * @param {string} [opts.proxy] - Proxy server (e.g. 'http://host:port').
  * @param {string} [opts.binary] - Path to browser binary (auto-detected if omitted).
  * @param {string} [opts.userDataDir] - Browser profile directory.
- * @param {{width: number, height: number}} [opts.viewport] - Viewport dimensions.
+ * @param {string|{width: number, height: number}} [opts.viewport] - Viewport dimensions.
  * @param {boolean} [opts.consent=true] - Auto-dismiss cookie consent dialogs.
  * @param {string} [opts.storageState] - Path to a storage-state JSON file
  *   (cookies + localStorage) to load before navigation.
@@ -175,7 +180,7 @@ export async function browse(url, opts = {}) {
  * @param {'chromium'|'firefox'} [opts.engine='chromium'] - Browser engine.
  *   'firefox' drives over WebDriver BiDi (a separate transport / page object);
  *   'chromium' (default) uses CDP.
- * @returns The interactive page handle â€” see the exported `Page` typedef. The
+ * @returns The interactive page handle — see the exported `Page` typedef. The
  *   return type is left uninferred here (no `{...}` tag) so tsc derives it
  *   structurally from the returned object literals; annotating it as `Page`
  *   would be a self-reference, since `Page` is `ReturnType<typeof connect>`.
@@ -186,7 +191,7 @@ function canFind(finder) {
 }
 
 /**
- * Decide which engine connect() should use. Pure â€” the caller passes lazy
+ * Decide which engine connect() should use. Pure — the caller passes lazy
  * probe thunks so this is unit-testable without launching a browser.
  * An explicit `opts.engine` is always honored (existence is checked downstream
  * by launch()/connectFirefox(), which throw a clear install message if missing).
@@ -209,7 +214,11 @@ export function resolveEngine(opts, probe) {
 }
 
 export async function connect(opts = {}) {
-  // Firefox is driven over WebDriver BiDi (CDP is deprecated there) â€” a
+  const viewport = parseViewport(opts.viewport);
+  opts = { ...opts, viewport };
+  if (opts.engine && !['chromium', 'firefox'].includes(opts.engine)) throw new Error('engine must be chromium or firefox');
+  if (opts.mode && !['headless', 'headed', 'hybrid'].includes(opts.mode)) throw new Error('mode must be headless, headed or hybrid');
+  // Firefox is driven over WebDriver BiDi (CDP is deprecated there) — a
   // separate transport with its own page object. It reuses prune.js/aria.js/
   // readable.js but none of the CDP page machinery below, so branch early.
   const { engine: resolvedEngine, fellBack } = resolveEngine(opts, {
@@ -219,9 +228,9 @@ export async function connect(opts = {}) {
   if (resolvedEngine === 'firefox') {
     if (fellBack) {
       // Loud, to stderr (stdout is data on CLI/MCP). Only fires on the default
-      // path â€” an explicit engine never falls back, so never warns.
+      // path — an explicit engine never falls back, so never warns.
       console.warn(
-        'swiftbrowse: no Chromium browser found â€” falling back to Firefox over '
+        'swiftbrowse: no Chromium browser found — falling back to Firefox over '
         + 'WebDriver BiDi. Pass engine explicitly to silence this.',
       );
     }
@@ -231,7 +240,7 @@ export async function connect(opts = {}) {
   const mode = opts.mode || 'headless';
   const attachMode = !!opts.port;
   // Incognito: run a clean, unauthenticated session. Skips storageState loading
-  // and neuters injectCookies() so no auth ever enters the session â€” even when
+  // and neuters injectCookies() so no auth ever enters the session — even when
   // a caller (MCP goto, daemon) calls injectCookies() unconditionally. The
   // temp profile is already throwaway; this gates the OTHER auth source: the
   // user's real browser cookies. Not Chrome's --incognito flag (redundant with
@@ -239,6 +248,7 @@ export async function connect(opts = {}) {
   const incognito = !!opts.incognito;
   let browser = null;
   let cdp;
+  let ownedDownloadDir = null;
   // Forward caller-supplied launch knobs into every launch() below,
   // including hybrid-fallback re-launches inside goto().
   const launchOpts = { proxy: opts.proxy, binary: opts.binary, userDataDir: opts.userDataDir };
@@ -248,8 +258,9 @@ export async function connect(opts = {}) {
   // assertUploadAllowed resolves it (realpath) at check time.
   const uploadDir = opts.uploadDir || null;
 
+  try {
   if (attachMode) {
-    // Reuse the user's running browser â€” do not launch, do not own the
+    // Reuse the user's running browser — do not launch, do not own the
     // profile. cleanupBrowser() is a no-op on this shape (process: null,
     // ownedProfileDir: null), which is the whole point.
     browser = await attach({ port: opts.port ?? 0 });
@@ -263,9 +274,9 @@ export async function connect(opts = {}) {
   }
 
   // In attach mode we don't know (and shouldn't assume) the user's headed/
-  // headless state â€” treat it as headed so stealth patches are skipped
+  // headless state — treat it as headed so stealth patches are skipped
   // (they'd persist in the user's session via addScriptToEvaluateOnNewDocument)
-  // and the headedâ†’headless rewind in goto() is gated off below.
+  // and the headed→headless rewind in goto() is gated off below.
   let currentlyHeaded = attachMode || (mode === 'headed');
   // Default blockAds on for owned browsers, off in attach mode (would affect
   // any tab we attach to in the user's running session). Caller can flip with
@@ -279,7 +290,7 @@ export async function connect(opts = {}) {
   let refMap = new Map();
   let botBlocked = false;
 
-  // Suppress permission prompts. Skipped in attach mode â€” Browser.setPermission
+  // Suppress permission prompts. Skipped in attach mode — Browser.setPermission
   // is browser-wide (no origin scope here), so flipping permissions to denied
   // would leak into the user's other tabs.
   if (!attachMode) {
@@ -287,7 +298,7 @@ export async function connect(opts = {}) {
   }
 
   // Load storage state (cookies + localStorage) from file.
-  // Skipped under incognito â€” storageState is an auth source too.
+  // Skipped under incognito — storageState is an auth source too.
   if (opts.storageState && !incognito) {
     try {
       const { readFileSync } = await import('node:fs');
@@ -295,15 +306,15 @@ export async function connect(opts = {}) {
       if (state.cookies?.length) {
         await page.session.send('Network.setCookies', { cookies: state.cookies });
       }
-    } catch { /* file not found or invalid â€” continue without */ }
+    } catch { /* file not found or invalid — continue without */ }
   }
 
-  // Download tracking â€” wire Browser.setDownloadBehavior so files actually
+  // Download tracking — wire Browser.setDownloadBehavior so files actually
   // land on disk (default Chromium would route them to ~/Downloads or
   // nowhere useful in headless), and listen for downloadWillBegin /
   // downloadProgress so callers can read `page.downloads` to know what
   // arrived. In attach mode we don't change the user's running browser's
-  // download dir â€” they almost certainly have an existing preference.
+  // download dir — they almost certainly have an existing preference.
   const downloads = [];
   let ownedDownloadDir = null;
   if (!attachMode) {
@@ -316,7 +327,7 @@ export async function connect(opts = {}) {
     }
     // Register listeners BEFORE sending setDownloadBehavior so no
     // downloadWillBegin / downloadProgress event can fire into a session
-    // without subscribers â€” about:blank can't initiate a download so the
+    // without subscribers — about:blank can't initiate a download so the
     // window is microscopic in practice, but ordering it correctly costs
     // nothing.
     cdp.on('Browser.downloadWillBegin', (params) => {
@@ -344,14 +355,14 @@ export async function connect(opts = {}) {
         behavior: 'allowAndName', downloadPath, eventsEnabled: true,
       });
     } catch {
-      // Older Chrome may not accept 'allowAndName' â€” fall back to 'allow'
+      // Older Chrome may not accept 'allowAndName' — fall back to 'allow'
       // which uses the suggested filename verbatim (no GUID).
       try {
         await cdp.send('Browser.setDownloadBehavior', {
           behavior: 'allow', downloadPath, eventsEnabled: true,
         });
       } catch {
-        // Download capture unavailable on this Chrome â€” downloads still
+        // Download capture unavailable on this Chrome — downloads still
         // happen, we just can't observe them. page.downloads stays empty.
       }
     }
@@ -359,7 +370,7 @@ export async function connect(opts = {}) {
 
   // JS dialog handling (alert, confirm, prompt, beforeunload). Default is
   // auto-accept everything except beforeunload (auto-dismiss). The caller
-  // can install a custom decision via page.onDialog(handler) â€” the handler
+  // can install a custom decision via page.onDialog(handler) — the handler
   // gets { type, message, defaultPrompt } and may return
   // { accept: bool, promptText: string } to override.
   const dialogLog = [];
@@ -380,13 +391,13 @@ export async function connect(opts = {}) {
     async goto(url, timeout = 30000) {
       url = normalizeUrl(url);
       assertNavigable(url, urlGuard);
-      // Refs from the previous page are about to become invalid â€” clear
+      // Refs from the previous page are about to become invalid — clear
       // before navigating so a stale click(ref) errors clearly instead of
       // silently resolving to whatever backendNodeId happens to still be in
       // the map.
       refMap = new Map();
       // Switch back to headless if we fell back to headed previously.
-      // Not in attach mode â€” we never own the browser there, so there's
+      // Not in attach mode — we never own the browser there, so there's
       // nothing to rewind.
       if (currentlyHeaded && mode === 'hybrid' && !attachMode) {
         await cdp.send('Target.closeTarget', { targetId: page.targetId });
@@ -411,7 +422,7 @@ export async function connect(opts = {}) {
       botBlocked = isChallengePage(tree, nodeCount);
 
       // Hybrid fallback: if bot-blocked, retry with headed browser.
-      // Suppressed in attach mode â€” we can't tear down the user's running
+      // Suppressed in attach mode — we can't tear down the user's running
       // browser and we don't know what mode they started it in.
       if (botBlocked && mode === 'hybrid' && !attachMode) {
         await cdp.send('Target.closeTarget', { targetId: page.targetId });
@@ -432,7 +443,7 @@ export async function connect(opts = {}) {
           botBlocked = isChallengePage(after.tree, after.nodeCount);
           currentlyHeaded = true;
         } catch {
-          // Headed launch failed (no display?) â€” keep headless result, botBlocked stays true
+          // Headed launch failed (no display?) — keep headless result, botBlocked stays true
         }
       }
     },
@@ -480,20 +491,20 @@ export async function connect(opts = {}) {
       const raw = formatTree(result.tree);
       const { currentIndex, entries } = await page.session.send('Page.getNavigationHistory');
       const pageUrl = entries[currentIndex]?.url || '';
-      const warn = botBlocked ? '[BOT CHALLENGE DETECTED â€” page content may be incomplete or blocked]\n' : '';
+      const warn = botBlocked ? '[BOT CHALLENGE DETECTED — page content may be incomplete or blocked]\n' : '';
       if (pruneOpts === false) return `url: ${pageUrl}\n` + warn + raw;
       const mode = pruneOpts?.mode || 'act';
       const pruned = pruneTree(result.tree, { mode });
       const out = formatTree(pruned);
-      const stats = `url: ${pageUrl}\n${raw.length.toLocaleString()} chars â†’ ${out.length.toLocaleString()} chars (${Math.round((1 - out.length / raw.length) * 100)}% pruned)`;
+      const stats = `url: ${pageUrl}\n${raw.length.toLocaleString()} chars → ${out.length.toLocaleString()} chars (${Math.round((1 - out.length / raw.length) * 100)}% pruned)`;
       const hint = (mode === 'act' && raw.length > 5000 && out.length < 500 && out.length < raw.length * 0.05)
-        ? `hint: act mode dropped most of the page â€” retry with pruneMode='read' for paragraphs and long text\n`
+        ? `hint: act mode dropped most of the page — retry with pruneMode='read' for paragraphs and long text\n`
         : '';
       return stats + '\n' + hint + warn + out;
     },
 
     // Clean article text (Firefox Reader View engine), for reading/summarising
-    // â€” not for interacting. Returns { ok:false, hint } on non-article pages.
+    // — not for interacting. Returns { ok:false, hint } on non-article pages.
     // See readable.js for why this never hard-gates on article detection.
     ...createScrapingTools(async expression => {
       const { result, exceptionDetails } = await page.session.send('Runtime.evaluate', { expression, returnByValue: true });
@@ -519,7 +530,7 @@ export async function connect(opts = {}) {
     },
 
     async scroll(deltaY) {
-      await cdpScroll(page.session, deltaY);
+      await cdpScroll(page.session, deltaY, (viewport?.width ?? 1280) / 2, (viewport?.height ?? 800) / 2);
     },
 
     async press(key) {
@@ -543,7 +554,7 @@ export async function connect(opts = {}) {
       const to = refMap.get(toRef);
       if (!from) throw new Error(`No element found for ref "${fromRef}"`);
       if (!to) throw new Error(`No element found for ref "${toRef}"`);
-      // Drag across different frames isn't physically meaningful â€” bail
+      // Drag across different frames isn't physically meaningful — bail
       // rather than mix sessions and produce nonsense coordinates.
       if (from.session !== to.session) {
         throw new Error('drag() between elements in different frames is not supported');
@@ -583,7 +594,7 @@ export async function connect(opts = {}) {
       const target = pages[index];
       await cdp.send('Target.activateTarget', { targetId: target.targetId });
       if (target.targetId === page.targetId) return; // already on this tab
-      // Detach from old session, attach to new â€” the page variable is the
+      // Detach from old session, attach to new — the page variable is the
       // closure handle used by every method below, so swapping it makes
       // snapshot/click/type/etc. operate on the new tab.
       const oldSessionId = page.sessionId;
@@ -626,7 +637,7 @@ export async function connect(opts = {}) {
       });
       const state = { cookies, localStorage: JSON.parse(result.value || '{}') };
       const { writeFileSync } = await import('node:fs');
-      // State holds cookies + localStorage (session tokens) â€” write owner-only
+      // State holds cookies + localStorage (session tokens) — write owner-only
       // so a multi-user host can't read another user's credentials off disk.
       writeFileSync(filePath, JSON.stringify(state, null, 2), { mode: 0o600 });
       try { chmodSync(filePath, 0o600); } catch { /* best effort if pre-existing */ }
@@ -638,7 +649,7 @@ export async function connect(opts = {}) {
     engine: 'chromium',
 
     /**
-     * Introspection of this session's engine, mode, and feature support â€” see
+     * Introspection of this session's engine, mode, and feature support — see
      * the `Capabilities` typedef. Fields are launch-fixed except `stealth`,
      * which is a live getter tracking the current headed/headless state (flips
      * after a hybrid headed relaunch). Lets a caller ask "which engine am I on
@@ -695,7 +706,7 @@ export async function connect(opts = {}) {
       try {
         await page.session.once('Page.loadEventFired', timeout);
       } catch {
-        // Timeout â€” likely SPA nav with no load event. frameNavigated may
+        // Timeout — likely SPA nav with no load event. frameNavigated may
         // have already fired. Give a settle delay for DOM updates.
         await new Promise((r) => setTimeout(r, 500));
       }
@@ -705,7 +716,7 @@ export async function connect(opts = {}) {
       return waitForNetworkIdle(page.session, idleOpts);
     },
 
-    /** Raw CDP session for escape hatch â€” getter so it survives hybrid fallback / tab swaps */
+    /** Raw CDP session for escape hatch — getter so it survives hybrid fallback / tab swaps */
     bidi: undefined,
     context: undefined,
     get cdp() { return page.session; },
@@ -751,7 +762,7 @@ export async function connect(opts = {}) {
         await cleanupBrowser(browser); // no-op in attach mode (process: null)
       } finally {
         // If we created the download dir ourselves, clean it up too. Caller-
-        // supplied opts.downloadPath stays â€” the caller owns the lifecycle.
+        // supplied opts.downloadPath stays — the caller owns the lifecycle.
         if (ownedDownloadDir) {
           try {
             const { rmSync } = await import('node:fs');
@@ -761,6 +772,14 @@ export async function connect(opts = {}) {
       }
     },
   };
+  } catch (err) {
+    try { cdp?.close(); } catch {}
+    await cleanupBrowser(browser);
+    if (ownedDownloadDir) {
+      try { rmSync(ownedDownloadDir, { recursive: true, force: true }); } catch {}
+    }
+    throw err;
+  }
 }
 
 // --- Internal helpers ---
@@ -783,7 +802,7 @@ async function suppressPermissions(cdp) {
         setting: 'denied',
       });
     } catch {
-      // Permission type not supported in this Chrome version â€” skip
+      // Permission type not supported in this Chrome version — skip
     }
   }
 }
@@ -828,20 +847,34 @@ async function connectFirefox(opts) {
   // Launch Firefox, open a BiDi session, and apply stealth (headless-only,
   // mirroring the CDP `mode !== 'headed'` gate) + ad/tracker blocking. Shared
   // by the initial launch and the hybrid headed relaunch so both are wired
-  // identically. Blocking defaults on â€” Firefox is always a throwaway profile,
-  // never attach mode â€” and must be live before the first navigation.
+  // identically. Blocking defaults on — Firefox is always a throwaway profile,
+  // never attach mode — and must be live before the first navigation.
   async function launchAndSetup(headed) {
     const browser = await launchFirefox({
       headed, proxy: opts.proxy, binary: opts.binary, viewport: opts.viewport, downloadDir,
     });
-    const bidi = await createBiDi(browser.wsUrl);
+    let bidi;
+    try {
+    bidi = await createBiDi(browser.wsUrl);
     if (!headed) await applyFirefoxStealth(bidi);
     await applyFirefoxBlocklist(bidi, blockOpts);
     const { contexts } = await bidi.send('browsingContext.getTree', {});
     return { browser, bidi, topContext: contexts[0].context };
+    } catch (err) {
+      try { bidi?.close(); } catch {}
+      await cleanupFirefox(browser);
+      throw err;
+    }
   }
 
-  let { browser, bidi } = await launchAndSetup(opts.mode === 'headed');
+  let browser, bidi;
+  try {
+    ({ browser, bidi } = await launchAndSetup(opts.mode === 'headed'));
+  } catch (err) {
+    if (ownedDownloadDir) { try { rmSync(ownedDownloadDir, { recursive: true, force: true }); } catch {} }
+    throw err;
+  }
+
 
   // Hybrid relaunch: launch a headed Firefox FIRST (so a failure leaves the
   // current session intact), then tear down the old headless one and hand the
@@ -910,7 +943,7 @@ async function createPage(cdp, stealth = false, pageOpts = {}) {
     await applyStealth(session);
   }
 
-  // Ad/tracker URL blocking via CDP. Default on for owned browsers â€” shrinks
+  // Ad/tracker URL blocking via CDP. Default on for owned browsers — shrinks
   // ARIA, speeds loads. Skipped in attach mode (would affect the user's
   // running browser globally) and skippable per-call via blockAds:false.
   // Custom patterns in blockUrls extend the default unless blockAds is false.
@@ -918,7 +951,7 @@ async function createPage(cdp, stealth = false, pageOpts = {}) {
 
   // Set viewport size if specified (e.g. "1280x720")
   if (pageOpts.viewport) {
-    const [w, h] = pageOpts.viewport.split('x').map(Number);
+    const { width: w, height: h } = parseViewport(pageOpts.viewport) || {};
     if (w && h) {
       await session.send('Emulation.setDeviceMetricsOverride', {
         width: w, height: h, deviceScaleFactor: 1, mobile: false,
@@ -928,7 +961,7 @@ async function createPage(cdp, stealth = false, pageOpts = {}) {
 
   // Track child frame sessions (OOPIF) so ariaTree() can read across frame
   // boundaries. Same-origin iframes don't get their own session and stay
-  // queryable via the main session with a frameId param â€” see ariaTree().
+  // queryable via the main session with a frameId param — see ariaTree().
   const framesByFrameId = await attachFrameTracking(cdp, session);
 
   return { session, targetId, sessionId, framesByFrameId };
@@ -946,7 +979,7 @@ async function attachFrameTracking(cdp, mainSession) {
     if (params.targetInfo?.type !== 'iframe') return;
     const childSessionId = params.sessionId;
     const childSession = cdp.session(childSessionId);
-    // For OOPIF, targetId === frameId â€” see CDP Target domain docs.
+    // For OOPIF, targetId === frameId — see CDP Target domain docs.
     const frameId = params.targetInfo.targetId;
     framesByFrameId.set(frameId, { session: childSession, sessionId: childSessionId, targetId: frameId });
     // Enable domains on the child so we can read its AX tree.
@@ -993,14 +1026,14 @@ async function attachToExistingTarget(cdp, targetId, pageOpts = {}) {
 }
 
 // One-time warn flag for Network.setBlockedURLs reject. Module-scoped so the
-// warn fires once per process across every session â€” legacy Chrome will keep
+// warn fires once per process across every session — legacy Chrome will keep
 // rejecting and we don't want to spam.
 let blocklistWarned = false;
 
 /**
  * Apply Network.setBlockedURLs for ad/tracker blocking on a session.
  * Default list is on; pass blockAds:false to skip, blockUrls:[] to extend.
- * On failure (legacy Chrome lacking the method) warns once and continues â€”
+ * On failure (legacy Chrome lacking the method) warns once and continues —
  * blocking is an enhancement, not a hard requirement.
  *
  * Exported for unit testing of the warn-once behavior; not part of the public
@@ -1014,7 +1047,7 @@ export async function applyBlocklist(session, pageOpts) {
   } catch (err) {
     if (!blocklistWarned) {
       blocklistWarned = true;
-      console.warn(`swiftbrowse: Network.setBlockedURLs unsupported â€” ad/tracker blocking disabled (${err.message})`);
+      console.warn(`swiftbrowse: Network.setBlockedURLs unsupported — ad/tracker blocking disabled (${err.message})`);
     }
   }
 }
@@ -1060,7 +1093,7 @@ async function ariaTree(page) {
   // 2. For each frame, fetch its AX nodes and build a tree. refMap value is
   //    { session, backendNodeId } so click(ref) routes to the right CDP
   //    session (essential for cross-process iframes). refCounter is shared
-  //    across all frames in one snapshot â€” refs stay flat integers, so the
+  //    across all frames in one snapshot — refs stay flat integers, so the
   //    visible [ref=N] format and existing agent prompts don't change.
   const refMap = new Map();
   const treesByFrameId = new Map();
@@ -1077,12 +1110,12 @@ async function ariaTree(page) {
     let nodes = [];
     try {
       if (childEntry) {
-        // OOPIF â€” use the child session, no frameId param needed.
+        // OOPIF — use the child session, no frameId param needed.
         try { await frameSession.send('Accessibility.enable'); } catch {}
         const res = await frameSession.send('Accessibility.getFullAXTree');
         nodes = res.nodes;
       } else {
-        // Main frame or same-origin child â€” query main session, scoping by
+        // Main frame or same-origin child — query main session, scoping by
         // frameId for children (Accessibility.getFullAXTree without frameId
         // would just return the top frame, dropping same-origin iframe content).
         const params = i === 0 ? {} : { frameId: frame.id };
@@ -1090,7 +1123,7 @@ async function ariaTree(page) {
         nodes = res.nodes;
       }
     } catch {
-      // Frame may have navigated mid-snapshot â€” skip it rather than fail
+      // Frame may have navigated mid-snapshot — skip it rather than fail
       // the whole snapshot. The placeholder iframe node will simply have
       // no children in the merged tree.
       continue;
@@ -1115,7 +1148,7 @@ async function ariaTree(page) {
       const placeholder = findNodeByBackend(parentTree, backendNodeId);
       if (placeholder) placeholder.children = [childTree];
     } catch {
-      // Frame owner lookup failed â€” leave the iframe placeholder as-is.
+      // Frame owner lookup failed — leave the iframe placeholder as-is.
     }
   }
 
@@ -1126,10 +1159,10 @@ async function ariaTree(page) {
 /**
  * Transform CDP's flat AXNode array into a nested tree. Every tree node gets
  * a globally unique flat ref string from `refCounter` (shared across all
- * frames in one snapshot), and refMap is populated with ref â†’ { session,
+ * frames in one snapshot), and refMap is populated with ref → { session,
  * backendNodeId } so click/type can route to the right CDP session even when
  * the element lives in an iframe.
- * CDP nodes have parentId â€” we use that exclusively to avoid double-linking.
+ * CDP nodes have parentId — we use that exclusively to avoid double-linking.
  */
 function buildTree(nodes, session, refMap, refCounter) {
   if (!nodes || nodes.length === 0) return null;

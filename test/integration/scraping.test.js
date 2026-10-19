@@ -46,14 +46,14 @@ const FIXTURE = `data:text/html,${encodeURIComponent(`<!DOCTYPE html>
 // ── text() ───────────────────────────────────────────────────────────────────
 
 describe('page.text()', () => {
-  it('extracts readable text from example.com', async () => {
+  it('extracts readable text from a page', async () => {
     const page = await connect();
     try {
-      await page.goto('https://example.com');
+      await page.goto(FIXTURE);
       const text = await page.text();
       assert.ok(typeof text === 'string', 'text should be a string');
       assert.ok(text.length > 0, 'text should not be empty');
-      assert.ok(text.includes('Example Domain'), 'should include the page heading');
+      assert.ok(text.includes('Scraping Test'), 'should include the page heading');
     } finally {
       await page.close();
     }
@@ -62,7 +62,7 @@ describe('page.text()', () => {
   it('respects maxChars and appends truncation notice', async () => {
     const page = await connect();
     try {
-      await page.goto('https://example.com');
+      await page.goto(FIXTURE);
       const text = await page.text({ maxChars: 10 });
       assert.ok(text.includes('[...'), 'should append a truncation notice');
     } finally {
@@ -229,7 +229,7 @@ describe('page.table()', () => {
   it('returns null when no table is present', async () => {
     const page = await connect();
     try {
-      await page.goto('https://example.com');
+      await page.goto('data:text/html,<h1>No table</h1>');
       const data = await page.table();
       assert.equal(data, null);
     } finally {
@@ -289,14 +289,12 @@ describe('page.screenshot({ selector })', () => {
     }
   });
 
-  it('falls back to full page when selector does not match', async () => {
+  it('rejects a missing screenshot selector', async () => {
     const page = await connect();
     try {
       await page.goto(FIXTURE);
       // Non-matching selector — screenshot should still succeed (no clip applied)
-      const data = await page.screenshot({ selector: '.does-not-exist' });
-      assert.ok(typeof data === 'string');
-      assert.ok(data.startsWith('iVBOR'));
+      await assert.rejects(() => page.screenshot({ selector: '.does-not-exist' }), /No visible element/);
     } finally {
       await page.close();
     }
@@ -314,7 +312,7 @@ describe('CLI browse-batch', () => {
 
   it('scrapes two URLs and creates batch-*.yml files', () => {
     const out = cli(
-      ['browse-batch', 'https://example.com', 'https://example.org'],
+      ['browse-batch', FIXTURE, FIXTURE],
       { cwd: tmpDir },
     );
     assert.ok(out.includes('2/2 succeeded'), `expected 2/2 succeeded, got: ${out}`);
@@ -327,7 +325,7 @@ describe('CLI browse-batch', () => {
 
   it('reads URLs from --file flag', () => {
     const urlFile = join(tmpDir, 'urls.txt');
-    writeFileSync(urlFile, 'https://example.com\nhttps://example.org\n');
+    writeFileSync(urlFile, `${FIXTURE}\n${FIXTURE}\n`);
     const out = cli(['browse-batch', `--file=${urlFile}`], { cwd: tmpDir });
     assert.ok(out.includes('2/2 succeeded'), `expected 2/2 succeeded, got: ${out}`);
   });

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
 /**
  * Reject if `p` doesn't settle within `ms`. BiDi commands have no built-in
  * timeout, so a navigate/reload/traverse whose `wait:'complete'` never fires

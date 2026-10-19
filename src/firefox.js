@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
+import { killTreeSync } from './process-tree.js';
 /**
  * firefox.js — Find and launch Firefox with WebDriver BiDi enabled.
  *
@@ -15,7 +18,7 @@
  */
 
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -32,8 +35,7 @@ function reapAllSync() {
   const toReap = [...activeBrowsers];
   activeBrowsers.clear();
   for (const b of toReap) {
-    try { if (!b.process.killed) b.process.kill('SIGKILL'); } catch {}
-    try { process.kill(-b.process.pid, 'SIGKILL'); } catch {}
+    killTreeSync(b.process);
   }
   for (const b of toReap) {
     for (let i = 0; i < 20; i++) {
@@ -41,7 +43,7 @@ function reapAllSync() {
       sleepSync(50);
     }
     if (b.ownedProfileDir) {
-      try { rmSync(b.ownedProfileDir, { recursive: true, force: true }); } catch {}
+      try { rmSync(b.ownedProfileDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch {}
     }
   }
 }
@@ -56,6 +58,11 @@ function registerExitHandlers() {
 }
 
 const CANDIDATES = [
+  ...(process.platform === 'win32' ? [
+    join(process.env.PROGRAMFILES || 'C:\\Program Files', 'Mozilla Firefox', 'firefox.exe'),
+    join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Mozilla Firefox', 'firefox.exe'),
+    join(process.env.LOCALAPPDATA || '', 'Mozilla Firefox', 'firefox.exe'),
+  ] : []),
   'firefox',
   'firefox-esr',
   'firefox-developer-edition',
@@ -71,13 +78,13 @@ const CANDIDATES = [
 export function findFirefox() {
   for (const candidate of CANDIDATES) {
     try {
-      if (candidate.startsWith('/')) {
-        execFileSync('test', ['-f', candidate]);
-        return candidate;
+      if (candidate.includes('/') || candidate.includes('\\')) {
+        if (existsSync(candidate)) return candidate;
+        continue;
       }
-      const path = execFileSync('which', [candidate], {
-        encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
+      const path = execFileSync(process.platform === 'win32' ? 'where.exe' : 'which', [candidate], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
+      }).trim().split(/\r?\n/)[0];
       if (path) return path;
     } catch { /* try next */ }
   }
@@ -167,14 +174,16 @@ export async function launchFirefox(opts = {}) {
   args.push('about:blank');
 
   // detached:true → own process group, so cleanup can signal the whole tree.
-  const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: !opts.headed });
 
   // Firefox prints the BiDi endpoint to stderr. Wait for it (or die trying).
-  const wsUrl = await new Promise((resolve, reject) => {
+  let wsUrl;
+  try {
+  wsUrl = await new Promise((resolve, reject) => {
     let buf = '';
     const timeout = setTimeout(() => reject(new Error(`Firefox BiDi did not start within 20s. stderr: ${buf}`)), 20000);
     const scan = (chunk) => {
-      buf += chunk.toString();
+      buf = (buf + chunk.toString()).slice(-65536);
       const m = buf.match(/WebDriver BiDi listening on (ws:\/\/\S+)/);
       if (m) { clearTimeout(timeout); resolve(m[1].replace(/\/?$/, '') + '/session'); }
     };
@@ -186,6 +195,11 @@ export async function launchFirefox(opts = {}) {
       if (!buf.includes('WebDriver BiDi')) reject(new Error(`Firefox exited with code ${code}. stderr: ${buf}`));
     });
   });
+
+  } catch (err) {
+    await cleanupFirefox({ process: child, ownedProfileDir: profileDir });
+    throw err;
+  }
 
   const actualPort = parseInt(new URL(wsUrl.replace('/session', '')).port, 10);
   const browser = { wsUrl, process: child, port: actualPort, ownedProfileDir: profileDir };
@@ -205,8 +219,7 @@ export async function cleanupFirefox(browser) {
   if (!browser) return;
   activeBrowsers.delete(browser);
   const pid = browser.process.pid;
-  try { if (!browser.process.killed) browser.process.kill('SIGKILL'); } catch {}
-  if (pid != null) try { process.kill(-pid, 'SIGKILL'); } catch {}
+  killTreeSync(browser.process);
   // Wait for death so rmSync doesn't race Firefox's profile file handles.
   for (let i = 0; pid != null && i < 40; i++) {
     try { process.kill(pid, 0); } catch { break; }

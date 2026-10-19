@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
 /**
  * consent-firefox.js — Auto-dismiss cookie consent dialogs on the Firefox/BiDi
  * engine, by walking the reconstructed AX tree (ax-snapshot.js).

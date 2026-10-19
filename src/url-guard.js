@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
 /**
  * url-guard.js — Navigation safety checks for goto()/browse().
  *
@@ -39,7 +41,7 @@ export function normalizeUrl(url) {
  * @returns {boolean} true if it names a private/loopback/link-local/internal host
  */
 function isPrivateHost(host) {
-  const h = host.toLowerCase().replace(/^\[|\]$/g, ''); // strip IPv6 brackets
+  const h = host.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, ''); // strip IPv6 brackets
 
   // Internal hostnames
   if (h === 'localhost' || h.endsWith('.localhost')) return true;
@@ -64,11 +66,17 @@ function isPrivateHost(host) {
   // "fdic.gov" would match the fc00::/7 ULA prefix check and be wrongly blocked.
   if (h.includes(':')) {
     if (h === '::1' || h === '::') return true;        // loopback / unspecified
-    if (h.startsWith('fe80:')) return true;            // link-local fe80::/10
+    if ((parseInt(h.split(':')[0], 16) & 0xffc0) === 0xfe80) return true;            // link-local fe80::/10
     if (h.startsWith('fc') || h.startsWith('fd')) return true; // fc00::/7 ULA
     // IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1)
     const mapped = h.match(/::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
     if (mapped) return isPrivateHost(mapped[1]);
+    // WHATWG URL canonicalizes mapped IPv4 into hexadecimal IPv6 groups.
+    const hex = h.match(/^::ffff:([a-f0-9]{1,4}):([a-f0-9]{1,4})$/);
+    if (hex) {
+      const high = parseInt(hex[1], 16), low = parseInt(hex[2], 16);
+      return isPrivateHost(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
+    }
     return false;
   }
 

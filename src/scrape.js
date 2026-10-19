@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
 /** Structured extraction shared by CDP and BiDi. Expressions contain JSON-encoded arguments only. */
 
 /**

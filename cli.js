@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
 /**
  * cli.js -- swiftbrowse CLI entry point.
  *
@@ -208,12 +210,26 @@ async function cmdProxy(command, cmdArgs) {
   }
 }
 
+function browseOptions() {
+  return {
+    engine: parseFlag('--engine'), mode: parseFlag('--mode') || 'headless',
+    incognito: hasFlag('--incognito'), cookies: !hasFlag('--no-cookies'),
+    consent: !hasFlag('--no-consent'), browser: parseFlag('--browser'),
+    timeout: parseFlag('--timeout') ? Number(parseFlag('--timeout')) : undefined,
+    proxy: parseFlag('--proxy'), viewport: parseFlag('--viewport'),
+    pruneMode: parseFlag('--prune-mode') || 'act',
+    blockAds: !hasFlag('--no-block-ads'), blockUrls: parseFlagAll('--block-urls'),
+    blockPrivateNetwork: hasFlag('--block-private-network'),
+  };
+}
+
 async function oneShot() {
   const { browse } = await import('./src/index.js');
   const url = args[1];
-  const mode = args[2] || 'headless';
+  const options = browseOptions();
+  if (args[2] && !args[2].startsWith('--')) options.mode = args[2];
   try {
-    const snapshot = await browse(url, { mode, incognito: hasFlag('--incognito') || undefined });
+    const snapshot = await browse(url, options);
     process.stdout.write(snapshot + '\n');
     process.exit(0);
   } catch (err) {
@@ -226,7 +242,14 @@ async function cmdBrowseBatch() {
   const { browse } = await import('./src/index.js');
 
   // Collect URLs from positional args and/or --file=urls.txt
-  let urls = args.slice(1).filter((a) => !a.startsWith('--'));
+  const valuedFlags = new Set(['--file', '--mode', '--engine', '--timeout', '--browser', '--proxy', '--viewport', '--prune-mode', '--block-urls']);
+  const urls = [];
+  for (let i = 1; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith('--')) {
+      if (!arg.includes('=') && valuedFlags.has(arg)) i++;
+    } else urls.push(arg);
+  }
   const filePath = parseFlag('--file');
   if (filePath) {
     const lines = readFileSync(filePath, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean);
@@ -240,12 +263,12 @@ async function cmdBrowseBatch() {
 
   const outputDir = resolve('.swiftbrowse');
   mkdirSync(outputDir, { recursive: true, mode: 0o700 });
-  const mode = parseFlag('--mode') || 'headless';
+  const options = browseOptions();
 
   let ok = 0;
   for (const url of urls) {
     try {
-      const snapshot = await browse(url, { mode });
+      const snapshot = await browse(url, options);
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       const outFile = join(outputDir, `batch-${ts}.yml`);
       writeFileSync(outFile, snapshot, { mode: 0o600 });
@@ -256,6 +279,7 @@ async function cmdBrowseBatch() {
     }
   }
   process.stdout.write(`\n${ok}/${urls.length} succeeded\n`);
+  if (ok !== urls.length) process.exitCode = 1;
 }
 
 async function runDaemonInternal() {
@@ -467,7 +491,7 @@ async function doctor() {
  * browsers and cookie sources are actually installed, and whether a session is
  * live in this directory. This is the "which engine am I on and what can it do?"
  * answer — the gap that led a peer session to conclude Firefox wasn't supported
- * when it is (selected via BAREBROWSE_ENGINE / --engine, not a per-tool flag).
+ * when it is (selected via SWIFTBROWSE_ENGINE / --engine, not a per-tool flag).
  */
 async function doctorEnvironment() {
   const { findBrowser } = await import('./src/chromium.js');
@@ -480,14 +504,14 @@ async function doctorEnvironment() {
   // Configured engine/mode/incognito. MCP selects the engine at server launch
   // via these env vars (mcp-server.js), which a running session can't see —
   // surfacing them here is the whole point.
-  const engine = process.env.BAREBROWSE_ENGINE === 'firefox' ? 'firefox' : 'chromium';
-  const modeEnv = process.env.BAREBROWSE_MODE;
-  const incognito = process.env.BAREBROWSE_INCOGNITO === '1';
-  console.log(`  Default engine: ${engine}  (override: BAREBROWSE_ENGINE=firefox | --engine firefox | connect({engine}))`);
+  const engine = (process.env.SWIFTBROWSE_ENGINE ?? process.env.BAREBROWSE_ENGINE) === 'firefox' ? 'firefox' : 'chromium';
+  const modeEnv = (process.env.SWIFTBROWSE_MODE ?? process.env.BAREBROWSE_MODE);
+  const incognito = (process.env.SWIFTBROWSE_INCOGNITO ?? process.env.BAREBROWSE_INCOGNITO) === '1';
+  console.log(`  Default engine: ${engine}  (override: SWIFTBROWSE_ENGINE=firefox | --engine firefox | connect({engine}))`);
   // Mode default differs by surface: CLI `open` → headless, MCP → hybrid.
-  // BAREBROWSE_MODE overrides both, so report it directly when set.
-  console.log(`  Default mode:   ${modeEnv ? `${modeEnv}  (BAREBROWSE_MODE)` : 'headless (CLI open) / hybrid (MCP)'}`);
-  console.log(`  Incognito:      ${incognito ? 'on (BAREBROWSE_INCOGNITO=1) — no cookie injection' : 'off'}`);
+  // SWIFTBROWSE_MODE overrides both, so report it directly when set.
+  console.log(`  Default mode:   ${modeEnv ? `${modeEnv}  (SWIFTBROWSE_MODE)` : 'headless (CLI open) / hybrid (MCP)'}`);
+  console.log(`  Incognito:      ${incognito ? 'on (SWIFTBROWSE_INCOGNITO=1) — no cookie injection' : 'off'}`);
 
   // Installed browsers — both engines. A missing one explains why an --engine
   // choice would fail before it launches.
@@ -675,6 +699,9 @@ MCP:
 As a library:
   import { browse, connect } from 'swiftbrowse';
 
+Extraction: text [--max-chars=N], extract <selector> [--all] [--attr=NAME], links, table [selector]
+Batch: swiftbrowse browse-batch <url>... [--file=urls.txt] [--engine=firefox]
+Screenshots: --selector=CSS crops to the matching element
 More: see README.md or commands/swiftbrowse.md
 `);
 }

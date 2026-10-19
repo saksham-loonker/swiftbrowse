@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Modified for SwiftBrowse; includes BareBrowse code. Attribution and changes: NOTICE.
 /**
  * cdp.js — Minimal Chrome DevTools Protocol client over WebSocket.
  *
@@ -23,22 +25,31 @@ const MAX_PAYLOAD = 256 * 1024 * 1024; // 256 MB
  * @param {string} wsUrl - WebSocket URL (ws://127.0.0.1:PORT/devtools/...)
  * @returns {Promise<object>} CDP client ({ send, on, once, session, close })
  */
-export async function createCDP(wsUrl) {
+export async function createCDP(wsUrl, { commandTimeout = 60000 } = {}) {
   const ws = new WebSocket(wsUrl, { maxPayload: MAX_PAYLOAD, perMessageDeflate: false });
   let nextId = 1;
   const pending = new Map();   // id → { resolve, reject }
   const listeners = new Map(); // "method" or "sessionId:method" → Set<callback>
+  const eventWaits = new Set();
+  const failAll = error => {
+    for (const handler of pending.values()) handler.reject(error);
+    pending.clear();
+    for (const cancel of [...eventWaits]) cancel(error);
+  };
 
   /** @type {Promise<void>} */
   const connected = new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('CDP connection timeout (5s)')), 5000);
+    const timeout = setTimeout(() => {
+      ws.terminate();
+      reject(new Error('CDP connection timeout (5s)'));
+    }, 5000);
     ws.onopen = () => { clearTimeout(timeout); resolve(); };
     ws.onerror = (e) => {
       clearTimeout(timeout);
       reject(new Error(`CDP WebSocket connection failed: ${e.message || 'unknown error'}`));
     };
   });
-  await connected;
+  try { await connected; } catch (error) { ws.terminate(); throw error; }
 
   ws.onmessage = (event) => {
     const msg = JSON.parse(typeof event.data === 'string' ? event.data : event.data.toString());
@@ -76,17 +87,11 @@ export async function createCDP(wsUrl) {
   };
 
   ws.onerror = (e) => {
-    for (const [id, handler] of pending) {
-      handler.reject(new Error(`CDP WebSocket error: ${e.message || 'unknown'}`));
-      pending.delete(id);
-    }
+    failAll(new Error(`CDP WebSocket error: ${e.message || 'unknown'}`));
   };
 
   ws.onclose = () => {
-    for (const [id, handler] of pending) {
-      handler.reject(new Error('CDP WebSocket closed'));
-      pending.delete(id);
-    }
+    failAll(new Error('CDP WebSocket closed'));
   };
 
   const client = {
@@ -98,12 +103,24 @@ export async function createCDP(wsUrl) {
      * @returns {Promise<object>} Response result
      */
     send(method, params = {}, sessionId) {
+      if (ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error('CDP WebSocket closed'));
       const id = nextId++;
       const msg = { id, method, params };
       if (sessionId) msg.sessionId = sessionId;
       return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject });
-        ws.send(JSON.stringify(msg));
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`CDP command timed out: ${method}`));
+        }, commandTimeout);
+        pending.set(id, {
+          resolve: result => { clearTimeout(timer); resolve(result); },
+          reject: error => { clearTimeout(timer); reject(error); },
+        });
+        ws.send(JSON.stringify(msg), error => {
+          if (!error) return;
+          pending.get(id)?.reject(error);
+          pending.delete(id);
+        });
       });
     },
 
@@ -118,7 +135,7 @@ export async function createCDP(wsUrl) {
       const key = sessionId ? `${sessionId}:${method}` : method;
       if (!listeners.has(key)) listeners.set(key, new Set());
       listeners.get(key).add(callback);
-      return () => listeners.get(key).delete(callback);
+      return () => listeners.get(key)?.delete(callback);
     },
 
     /**
@@ -132,13 +149,22 @@ export async function createCDP(wsUrl) {
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           unsub();
+          eventWaits.delete(cancel);
           reject(new Error(`Timeout waiting for CDP event: ${method}`));
         }, timeout);
         const unsub = client.on(method, (params) => {
           clearTimeout(timer);
           unsub();
+          eventWaits.delete(cancel);
           resolve(params);
         }, sessionId);
+        const cancel = error => {
+          clearTimeout(timer);
+          unsub();
+          eventWaits.delete(cancel);
+          reject(error);
+        };
+        eventWaits.add(cancel);
       });
     },
 
@@ -158,7 +184,9 @@ export async function createCDP(wsUrl) {
 
     /** Close the WebSocket connection. */
     close() {
-      ws.close();
+      failAll(new Error('CDP WebSocket closed'));
+      listeners.clear();
+      ws.terminate();
     },
   };
 

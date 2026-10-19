@@ -136,7 +136,7 @@ describe('assertUploadAllowed()', () => {
     // Mirrors macOS /tmp -> /private/tmp: base path has a symlinked component.
     const real = mkdtempSync(join(tmpdir(), 'bb-real-'));
     const link = real + '-link';
-    symlinkSync(real, link);
+    symlinkSync(real, link, process.platform === 'win32' ? 'junction' : 'dir');
     try {
       const f = join(real, 'doc.txt');
       writeFileSync(f, 'x');
@@ -145,7 +145,7 @@ describe('assertUploadAllowed()', () => {
       // and via the symlink path
       assert.doesNotThrow(() => assertUploadAllowed([join(link, 'doc.txt')], link));
     } finally {
-      rmSync(link, { force: true });
+      rmSync(link, { force: true, recursive: true });
       rmSync(real, { recursive: true, force: true });
     }
   });
