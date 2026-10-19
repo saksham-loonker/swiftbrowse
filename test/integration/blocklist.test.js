@@ -14,32 +14,38 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { connect } from '../../src/index.js';
 
-async function startServer(handler) {
+async function startServer(handler, context) {
   const server = createServer(handler);
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
+  let closing;
+  const close = () => closing ??= new Promise(resolve => {
+    server.close(resolve);
+    server.closeAllConnections();
+  });
+  context.after(close);
   return {
     port,
     url: `http://127.0.0.1:${port}`,
-    close: () => new Promise((r) => server.close(r)),
+    close,
   };
 }
 
 describe('Network.setBlockedURLs integration', () => {
-  it('blocks a subresource matching blockUrls and does not hit the server', async () => {
+  it('blocks a subresource matching blockUrls and does not hit the server', async context => {
     let trackerHits = 0;
     const tracker = await startServer((_req, res) => {
       trackerHits++;
       res.writeHead(200, { 'Content-Type': 'application/javascript' });
       res.end('window.__tracker_loaded = true;');
-    });
+    }, context);
     const pageServer = await startServer((_req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(`<!doctype html><html><body>
         <h1>blocklist-probe</h1>
         <script src="${tracker.url}/track.js"></script>
       </body></html>`);
-    });
+    }, context);
 
     // Pass the tracker URL pattern via blockUrls so the test doesn't depend
     // on whichever real-world tracker the default list happens to cover.
@@ -66,7 +72,7 @@ describe('Network.setBlockedURLs integration', () => {
     }
   });
 
-  it('applies blockUrls on switchTab() in attach mode (post-switch session is blocked)', async () => {
+  it('applies blockUrls on switchTab() in attach mode (post-switch session is blocked)', async context => {
     // Regression guard for the v0.10.0 backlog item: when a user attaches to
     // a running browser with explicit blockAds:true / blockUrls:[…], the
     // blocklist must follow page.switchTab() onto a tab that was opened
@@ -78,14 +84,14 @@ describe('Network.setBlockedURLs integration', () => {
       trackerHits++;
       res.writeHead(200, { 'Content-Type': 'application/javascript' });
       res.end('window.__tracker_loaded = true;');
-    });
+    }, context);
     const pageServer = await startServer((_req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(`<!doctype html><html><body>
         <h1>switch-tab-blocklist-probe</h1>
         <script src="${tracker.url}/track.js"></script>
       </body></html>`);
-    });
+    }, context);
 
     const { launch, cleanupBrowser } = await import('../../src/chromium.js');
     const { createCDP } = await import('../../src/cdp.js');
@@ -138,19 +144,19 @@ describe('Network.setBlockedURLs integration', () => {
     }
   });
 
-  it('does not block subresources when blockAds:false and no blockUrls', async () => {
+  it('does not block subresources when blockAds:false and no blockUrls', async context => {
     let trackerHits = 0;
     const tracker = await startServer((_req, res) => {
       trackerHits++;
       res.writeHead(200, { 'Content-Type': 'application/javascript' });
       res.end('window.__tracker_loaded = true;');
-    });
+    }, context);
     const pageServer = await startServer((_req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(`<!doctype html><html><body>
         <script src="${tracker.url}/track.js"></script>
       </body></html>`);
-    });
+    }, context);
 
     const page = await connect({ mode: 'headless', blockAds: false });
     try {

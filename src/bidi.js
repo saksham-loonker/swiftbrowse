@@ -32,22 +32,31 @@ const MAX_PAYLOAD = 256 * 1024 * 1024; // 256 MB
  * @param {string} wsUrl - BiDi session WebSocket URL (ws://HOST:PORT/session)
  * @returns {Promise<object>} BiDi client ({ send, evaluate, on, once, subscribe, sessionId, close })
  */
-export async function createBiDi(wsUrl) {
+export async function createBiDi(wsUrl, { commandTimeout = 60000 } = {}) {
   const ws = new WebSocket(wsUrl, { maxPayload: MAX_PAYLOAD, perMessageDeflate: false });
   let nextId = 1;
   const pending = new Map();   // id → { resolve, reject }
   const listeners = new Map(); // "method" → Set<callback>
+  const eventWaits = new Set();
+  const failAll = error => {
+    for (const handler of pending.values()) handler.reject(error);
+    pending.clear();
+    for (const cancel of [...eventWaits]) cancel(error);
+  };
 
   /** @type {Promise<void>} */
   const connected = new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('BiDi connection timeout (5s)')), 5000);
+    const timeout = setTimeout(() => {
+      ws.terminate();
+      reject(new Error('BiDi connection timeout (5s)'));
+    }, 5000);
     ws.onopen = () => { clearTimeout(timeout); resolve(); };
     ws.onerror = (e) => {
       clearTimeout(timeout);
       reject(new Error(`BiDi WebSocket connection failed: ${e.message || 'unknown error'}`));
     };
   });
-  await connected;
+  try { await connected; } catch (error) { ws.terminate(); throw error; }
 
   ws.onmessage = (event) => {
     const msg = JSON.parse(typeof event.data === 'string' ? event.data : event.data.toString());
@@ -71,12 +80,8 @@ export async function createBiDi(wsUrl) {
     }
   };
 
-  ws.onclose = () => {
-    for (const [id, handler] of pending) {
-      handler.reject(new Error('BiDi WebSocket closed'));
-      pending.delete(id);
-    }
-  };
+  ws.onerror = event => failAll(new Error(`BiDi WebSocket error: ${event.message || 'unknown'}`));
+  ws.onclose = () => failAll(new Error('BiDi WebSocket closed'));
 
   const client = {
     /**
@@ -86,10 +91,22 @@ export async function createBiDi(wsUrl) {
      * @returns {Promise<object>} result
      */
     send(method, params = {}) {
+      if (ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error('BiDi WebSocket closed'));
       const id = nextId++;
       return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject });
-        ws.send(JSON.stringify({ id, method, params }));
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`BiDi command timed out: ${method}`));
+        }, commandTimeout);
+        pending.set(id, {
+          resolve: result => { clearTimeout(timer); resolve(result); },
+          reject: error => { clearTimeout(timer); reject(error); },
+        });
+        ws.send(JSON.stringify({ id, method, params }), error => {
+          if (!error) return;
+          pending.get(id)?.reject(error);
+          pending.delete(id);
+        });
       });
     },
 
@@ -127,14 +144,31 @@ export async function createBiDi(wsUrl) {
 
     /** Resolve once a named event fires (or reject on timeout). */
     once(method, timeout = 30000) {
+      if (ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error('BiDi WebSocket closed'));
       return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => { unsub(); reject(new Error(`Timeout waiting for BiDi event: ${method}`)); }, timeout);
-        const unsub = client.on(method, (params) => { clearTimeout(timer); unsub(); resolve(params); });
+        const timer = setTimeout(() => cancel(new Error(`Timeout waiting for BiDi event: ${method}`)), timeout);
+        const unsub = client.on(method, params => {
+          clearTimeout(timer);
+          unsub();
+          eventWaits.delete(cancel);
+          resolve(params);
+        });
+        const cancel = error => {
+          clearTimeout(timer);
+          unsub();
+          eventWaits.delete(cancel);
+          reject(error);
+        };
+        eventWaits.add(cancel);
       });
     },
 
     sessionId: null,
-    close() { ws.close(); },
+    close() {
+      failAll(new Error('BiDi WebSocket closed'));
+      listeners.clear();
+      ws.terminate();
+    },
   };
 
   // Open the session. unhandledPromptBehavior:'ignore' stops Firefox from
@@ -142,9 +176,15 @@ export async function createBiDi(wsUrl) {
   // — without it, browsingContext.handleUserPrompt loses the race and fails
   // with "no such alert" (measured). firefox-page.js wires a userPromptOpened
   // handler before any navigation, so no dialog is ever left hanging.
-  const session = await client.send('session.new', {
-    capabilities: { alwaysMatch: { unhandledPromptBehavior: 'ignore' } },
-  });
+  let session;
+  try {
+    session = await client.send('session.new', {
+      capabilities: { alwaysMatch: { unhandledPromptBehavior: 'ignore' } },
+    });
+  } catch (error) {
+    client.close();
+    throw error;
+  }
   client.sessionId = session.sessionId;
   client.capabilities = session.capabilities;
   return client;

@@ -39,5 +39,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Check browser binaries and protocol startup
+        run: xvfb-run -a node scripts/check-browsers.mjs
       # Headed/hybrid tests need a display even on an unattended Linux runner.
-      - run: xvfb-run -a npm run test:integration
+      - run: xvfb-run -a node --test --test-reporter=tap --test-concurrency=2 --test-timeout=120000 test/integration/*.test.js
