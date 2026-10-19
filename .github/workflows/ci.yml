@@ -39,4 +39,5 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run test:integration
+      # Headed/hybrid tests need a display even on an unattended Linux runner.
+      - run: xvfb-run -a npm run test:integration
