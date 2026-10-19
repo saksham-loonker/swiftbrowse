@@ -8,30 +8,49 @@
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { writeFileSync, mkdirSync, existsSync, readFileSync, unlinkSync } from 'node:fs';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { connect } from './index.js';
+import { formatReadable } from './readable.js';
+import { cleanOld } from './output-clean.js';
+
+/** Owner-only file write helper — daemon artifacts can hold authenticated content. */
+function writeFilePrivate(path, data) {
+  writeFileSync(path, data, { mode: 0o600 });
+}
+
+/** Constant-time token compare; false on any length/format mismatch. */
+function tokenMatches(expected, got) {
+  if (typeof got !== 'string' || got.length !== expected.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(got), Buffer.from(expected));
+  } catch {
+    return false;
+  }
+}
 
 const SESSION_FILE = 'session.json';
 
 /**
- * Spawn a detached child process that runs the daemon.
- * Parent polls for session.json, then exits.
+ * Build the argv for the detached daemon child. Pure + exported so the
+ * flag-forwarding contract is unit-testable: a forward that's silently
+ * dropped here (as `--incognito` was in v0.15.0, turning `open --incognito`
+ * into a fully-authenticated session) becomes a failing test, not a leak.
+ * @param {object} opts - the session options parsed in cli.js cmdOpen
+ * @param {string} absDir - resolved output directory
+ * @param {string|undefined} initialUrl - URL to navigate on start (may be undefined)
+ * @param {string} cliPath - path to cli.js for the child to run
+ * @returns {string[]}
  */
-export async function startDaemon(opts, outputDir, initialUrl) {
-  const absDir = resolve(outputDir);
-  mkdirSync(absDir, { recursive: true });
-
-  // Clean stale session
-  const sessionPath = join(absDir, SESSION_FILE);
-  if (existsSync(sessionPath)) unlinkSync(sessionPath);
-
-  // Build child args
-  const args = [join(import.meta.dirname, '..', 'cli.js'), '--daemon-internal'];
+export function buildDaemonArgs(opts, absDir, initialUrl, cliPath) {
+  const args = [cliPath, '--daemon-internal'];
   args.push('--output-dir', absDir);
   if (initialUrl) args.push('--url', initialUrl);
+  if (opts.engine) args.push('--engine', opts.engine);
   if (opts.mode) args.push('--mode', opts.mode);
   if (opts.port) args.push('--port', String(opts.port));
   if (opts.cookies === false) args.push('--no-cookies');
+  if (opts.incognito) args.push('--incognito');
   if (opts.browser) args.push('--browser', opts.browser);
   if (opts.timeout) args.push('--timeout', String(opts.timeout));
   if (opts.pruneMode) args.push('--prune-mode', opts.pruneMode);
@@ -39,20 +58,139 @@ export async function startDaemon(opts, outputDir, initialUrl) {
   if (opts.proxy) args.push('--proxy', opts.proxy);
   if (opts.viewport) args.push('--viewport', opts.viewport);
   if (opts.storageState) args.push('--storage-state', opts.storageState);
+  if (opts.downloadPath) args.push('--download-path', opts.downloadPath);
+  if (opts.blockAds === false) args.push('--no-block-ads');
+  if (Array.isArray(opts.blockUrls)) {
+    for (const p of opts.blockUrls) args.push('--block-urls', p);
+  }
+  if (opts.blockPrivateNetwork) args.push('--block-private-network');
+  if (opts.uploadDir) args.push('--upload-dir', opts.uploadDir);
+  return args;
+}
 
-  // Write daemon stdout/stderr to a log file so pipes don't block on Windows
-  const logPath = join(absDir, 'daemon.log');
-  const { openSync } = await import('node:fs');
-  const logFd = openSync(logPath, 'w');
+/**
+ * Convert a BiDi remote value ({type,value} — see script.evaluate) into the
+ * plain JS value CDP's `Runtime.evaluate({returnByValue:true})` yields, so an
+ * `eval` returns the same shape on both engines. BiDi serializes objects/arrays
+ * as entry lists ([[k,v],…] / [v,…]) rather than plain values; walk them back.
+ * @param {object} r - BiDi remote value
+ * @returns {*}
+ */
+export function deserializeBiDi(r) {
+  if (!r || typeof r !== 'object') return r;
+  switch (r.type) {
+    case 'undefined': return undefined;
+    case 'null': return null;
+    case 'string': case 'number': case 'boolean': case 'bigint': return r.value;
+    case 'array': case 'set': return (r.value || []).map(deserializeBiDi);
+    case 'object': case 'map':
+      return Object.fromEntries(
+        (r.value || []).map(([k, v]) => [typeof k === 'object' ? deserializeBiDi(k) : k, deserializeBiDi(v)]),
+      );
+    // date/regexp/node/function/etc. — no plain-value equivalent; use the raw
+    // value if BiDi provided one, else the type name (matches CDP's coarseness).
+    default: return r.value !== undefined ? r.value : r.type;
+  }
+}
+
+/**
+ * Wire Firefox/BiDi console + network capture onto the daemon's log arrays.
+ * The BiDi analogue of the CDP `Runtime.consoleAPICalled` / `Network.*`
+ * capture — measured event shapes: `log.entryAdded` carries {method, level,
+ * args:[{type,value}], text}; the network events key in-flight requests by
+ * `request.request` and expose `response.{status,statusText,mimeType}` /
+ * top-level `errorText`. Pure + exported so the shape mapping (warn→warning
+ * normalization, arg extraction, orphan-safe response/error pairing) is
+ * unit-testable against a fake bidi without launching Firefox.
+ *
+ * @param {object} bidi - BiDi client (async .subscribe(), .on(method, cb))
+ * @param {object} sinks
+ * @param {Array} sinks.consoleLogs - push-target for console entries
+ * @param {Array} sinks.networkLogs - push-target for completed/failed requests
+ * @param {Map} sinks.pendingRequests - in-flight request bookkeeping
+ * @returns {Promise<void>}
+ */
+export async function attachBiDiCapture(bidi, { consoleLogs, networkLogs, pendingRequests }) {
+  await bidi.subscribe([
+    'log.entryAdded',
+    'network.beforeRequestSent',
+    'network.responseCompleted',
+    'network.fetchError',
+  ]);
+
+  bidi.on('log.entryAdded', (e) => {
+    consoleLogs.push({
+      // Map BiDi's console method (or level for uncaught JS errors) to CDP's
+      // `type` vocabulary so `console-logs --level warning` matches on both
+      // engines — BiDi says 'warn', CDP says 'warning'.
+      type: e.method === 'warn' ? 'warning' : (e.method || e.level),
+      timestamp: new Date().toISOString(),
+      // Primitive args carry a usable `.value`; objects/arrays/functions carry a
+      // nested {type,value} serialization we must NOT splat into the log (it's
+      // deep junk) — fall back to the type name, mirroring the CDP capture which
+      // logs a RemoteObject's `.description` ("Object") for non-primitives.
+      args: Array.isArray(e.args) && e.args.length
+        ? e.args.map((a) => (a.value !== undefined && typeof a.value !== 'object' ? a.value : a.type))
+        : [e.text],
+    });
+  });
+
+  bidi.on('network.beforeRequestSent', (e) => {
+    pendingRequests.set(e.request.request, {
+      url: e.request.url,
+      method: e.request.method,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  bidi.on('network.responseCompleted', (e) => {
+    const req = pendingRequests.get(e.request.request);
+    if (req) {
+      networkLogs.push({
+        ...req,
+        status: e.response.status,
+        statusText: e.response.statusText,
+        mimeType: e.response.mimeType,
+      });
+      pendingRequests.delete(e.request.request);
+    }
+  });
+
+  bidi.on('network.fetchError', (e) => {
+    const req = pendingRequests.get(e.request.request);
+    if (req) {
+      networkLogs.push({ ...req, status: 0, error: e.errorText });
+      pendingRequests.delete(e.request.request);
+    }
+  });
+}
+
+/**
+ * Spawn a detached child process that runs the daemon.
+ * Parent polls for session.json, then exits.
+ */
+export async function startDaemon(opts, outputDir, initialUrl) {
+  const absDir = resolve(outputDir);
+  mkdirSync(absDir, { recursive: true, mode: 0o700 });
+
+  // Clean stale session
+  const sessionPath = join(absDir, SESSION_FILE);
+  if (existsSync(sessionPath)) unlinkSync(sessionPath);
+
+  // Build child args (pure + testable — see buildDaemonArgs).
+  const args = buildDaemonArgs(opts, absDir, initialUrl, join(import.meta.dirname, '..', 'cli.js'));
 
   const child = spawn(process.execPath, args, {
     detached: true,
-    stdio: ['ignore', logFd, logFd],
+    stdio: 'ignore',
     env: { ...process.env },
   });
   child.unref();
 
-  // Poll for session.json (50ms interval, 30s timeout)
+  // Poll for session.json (50ms interval, 30s timeout). 30s covers cold
+  // Chromium boot plus initial-URL navigation on slower CI/older hardware;
+  // the previous 15s was tight enough that the ad-blocklist's added
+  // CDP setup time pushed real boots past it on stress runs.
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     if (existsSync(sessionPath)) {
@@ -63,12 +201,7 @@ export async function startDaemon(opts, outputDir, initialUrl) {
     }
     await new Promise((r) => setTimeout(r, 50));
   }
-
-  // Read log for error context
-  let log = '';
-  try { log = readFileSync(logPath, 'utf8').slice(-500); } catch { /* no log */ }
-  const hint = log ? `\nDaemon log:\n${log}` : '';
-  throw new Error(`Daemon failed to start within 30s${hint}`);
+  throw new Error('Daemon failed to start within 30s');
 }
 
 /**
@@ -77,74 +210,88 @@ export async function startDaemon(opts, outputDir, initialUrl) {
  */
 export async function runDaemon(opts, outputDir, initialUrl) {
   const absDir = resolve(outputDir);
-  mkdirSync(absDir, { recursive: true });
+  mkdirSync(absDir, { recursive: true, mode: 0o700 });
+  cleanOld(absDir);
+
+  // Per-session auth token. The daemon binds to loopback, but loopback is
+  // shared across local users — without a token any local user/process could
+  // POST /command and drive the authenticated browser (incl. `eval`). The
+  // token is written into session.json (mode 0600) so only the owner reads it.
+  const authToken = randomBytes(32).toString('hex');
 
   // Connect to browser
   const page = await connect({
+    engine: opts.engine,
     mode: opts.mode || 'headless',
     port: opts.port ? Number(opts.port) : undefined,
     consent: opts.consent,
     proxy: opts.proxy,
     viewport: opts.viewport,
     storageState: opts.storageState,
+    downloadPath: opts.downloadPath,
+    blockAds: opts.blockAds,
+    blockUrls: opts.blockUrls,
+    blockPrivateNetwork: opts.blockPrivateNetwork,
+    uploadDir: opts.uploadDir,
+    // incognito neuters injectCookies() session-wide; cookies:false (below)
+    // is the legacy per-open equivalent. Either yields a logged-out session.
+    incognito: opts.incognito || opts.cookies === false,
   });
 
-  // Console log capture — capped to prevent unbounded memory growth
-  const MAX_LOG_ENTRIES = 10000;
+  // Console + network log capture. CDP uses Runtime/Network events off
+  // page.cdp; the Firefox/BiDi engine (page.bidi) captures the same shape over
+  // log.entryAdded / network.* events (Phase 2 — attachBiDiCapture). Either
+  // way console-logs / network-log / wait-idle behave the same for both.
   const consoleLogs = [];
-  await page.cdp.send('Runtime.enable');
-  page.cdp.on('Runtime.consoleAPICalled', (params) => {
-    if (consoleLogs.length >= MAX_LOG_ENTRIES) consoleLogs.shift();
-    consoleLogs.push({
-      type: params.type,
-      timestamp: new Date().toISOString(),
-      args: params.args.map((a) => a.value ?? a.description ?? a.type),
-    });
-  });
-
-  // Network log capture (Network.enable already called by connect)
   const networkLogs = [];
   const pendingRequests = new Map();
 
-  page.cdp.on('Network.requestWillBeSent', (params) => {
-    // Cap pendingRequests to avoid memory accumulation from abandoned requests
-    if (pendingRequests.size >= MAX_LOG_ENTRIES) {
-      const firstKey = pendingRequests.keys().next().value;
-      pendingRequests.delete(firstKey);
-    }
-    pendingRequests.set(params.requestId, {
-      url: params.request.url,
-      method: params.request.method,
-      timestamp: new Date().toISOString(),
+  if (page.cdp) {
+    await page.cdp.send('Runtime.enable');
+    page.cdp.on('Runtime.consoleAPICalled', (params) => {
+      consoleLogs.push({
+        type: params.type,
+        timestamp: new Date().toISOString(),
+        args: params.args.map((a) => a.value ?? a.description ?? a.type),
+      });
     });
-  });
 
-  page.cdp.on('Network.responseReceived', (params) => {
-    const req = pendingRequests.get(params.requestId);
-    if (req) {
-      if (networkLogs.length >= MAX_LOG_ENTRIES) networkLogs.shift();
-      networkLogs.push({
-        ...req,
-        status: params.response.status,
-        statusText: params.response.statusText,
-        mimeType: params.response.mimeType,
+    // Network log capture (Network.enable already called by connect)
+    page.cdp.on('Network.requestWillBeSent', (params) => {
+      pendingRequests.set(params.requestId, {
+        url: params.request.url,
+        method: params.request.method,
+        timestamp: new Date().toISOString(),
       });
-      pendingRequests.delete(params.requestId);
-    }
-  });
+    });
 
-  page.cdp.on('Network.loadingFailed', (params) => {
-    const req = pendingRequests.get(params.requestId);
-    if (req) {
-      if (networkLogs.length >= MAX_LOG_ENTRIES) networkLogs.shift();
-      networkLogs.push({
-        ...req,
-        status: 0,
-        error: params.errorText,
-      });
-      pendingRequests.delete(params.requestId);
-    }
-  });
+    page.cdp.on('Network.responseReceived', (params) => {
+      const req = pendingRequests.get(params.requestId);
+      if (req) {
+        networkLogs.push({
+          ...req,
+          status: params.response.status,
+          statusText: params.response.statusText,
+          mimeType: params.response.mimeType,
+        });
+        pendingRequests.delete(params.requestId);
+      }
+    });
+
+    page.cdp.on('Network.loadingFailed', (params) => {
+      const req = pendingRequests.get(params.requestId);
+      if (req) {
+        networkLogs.push({
+          ...req,
+          status: 0,
+          error: params.errorText,
+        });
+        pendingRequests.delete(params.requestId);
+      }
+    });
+  } else if (page.bidi) {
+    await attachBiDiCapture(page.bidi, { consoleLogs, networkLogs, pendingRequests });
+  }
 
   // Navigate to initial URL if provided
   if (initialUrl) {
@@ -160,7 +307,6 @@ export async function runDaemon(opts, outputDir, initialUrl) {
   // Command handlers
   const handlers = {
     async goto({ url, timeout }) {
-      // page.goto calls validateUrl which auto-prepends https:// if needed
       await page.goto(url, timeout || 30000);
       return { ok: true };
     },
@@ -170,7 +316,18 @@ export async function runDaemon(opts, outputDir, initialUrl) {
       const text = await page.snapshot({ mode: pruneMode });
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       const file = join(absDir, `page-${ts}.yml`);
-      writeFileSync(file, text);
+      writeFilePrivate(file, text);
+      return { ok: true, file };
+    },
+
+    async readable() {
+      const r = await page.readable();
+      // A non-article page is not an error — surface the hint so the agent
+      // knows to fall back to snapshot, rather than failing the command.
+      if (!r.ok) return { ok: true, value: r.hint };
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const file = join(absDir, `article-${ts}.txt`);
+      writeFilePrivate(file, formatReadable(r));
       return { ok: true, file };
     },
 
@@ -178,16 +335,16 @@ export async function runDaemon(opts, outputDir, initialUrl) {
       const content = await page.text({ maxChars: maxChars ? Number(maxChars) : undefined });
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       const file = join(absDir, `text-${ts}.txt`);
-      writeFileSync(file, content);
+      writeFilePrivate(file, content);
       return { ok: true, file, chars: content.length };
     },
 
     async screenshot({ format, selector }) {
-      const data = await page.screenshot({ format: format || 'png', selector: selector || undefined });
+      const data = await page.screenshot({ format: format || 'png', selector });
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       const ext = format || 'png';
       const file = join(absDir, `screenshot-${ts}.${ext}`);
-      writeFileSync(file, Buffer.from(data, 'base64'));
+      writeFilePrivate(file, Buffer.from(data, 'base64'));
       return { ok: true, file };
     },
 
@@ -236,6 +393,17 @@ export async function runDaemon(opts, outputDir, initialUrl) {
       return { ok: true };
     },
 
+    async reload({ ignoreCache }) {
+      await page.reload({ ignoreCache: !!ignoreCache });
+      return { ok: true };
+    },
+
+    async downloads() {
+      // Snapshot the array — callers want a static view at the moment of
+      // the request, not a reference that mutates under them.
+      return { ok: true, value: page.downloads.map((d) => ({ ...d })) };
+    },
+
     async drag({ fromRef, toRef }) {
       await page.drag(String(fromRef), String(toRef));
       return { ok: true };
@@ -250,7 +418,7 @@ export async function runDaemon(opts, outputDir, initialUrl) {
       const data = await page.pdf({ landscape });
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       const file = join(absDir, `page-${ts}.pdf`);
-      writeFileSync(file, Buffer.from(data, 'base64'));
+      writeFilePrivate(file, Buffer.from(data, 'base64'));
       return { ok: true, file };
     },
 
@@ -281,7 +449,7 @@ export async function runDaemon(opts, outputDir, initialUrl) {
       if (!data) return { ok: false, error: `No table found for selector "${selector || 'table'}"` };
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       const file = join(absDir, `table-${ts}.json`);
-      writeFileSync(file, JSON.stringify(data, null, 2));
+      writeFilePrivate(file, JSON.stringify(data, null, 2));
       return { ok: true, file, rows: data.rows.length, cols: data.headers.length };
     },
 
@@ -295,18 +463,39 @@ export async function runDaemon(opts, outputDir, initialUrl) {
       const list = await page.links();
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       const file = join(absDir, `links-${ts}.json`);
-      writeFileSync(file, JSON.stringify(list, null, 2));
+      writeFilePrivate(file, JSON.stringify(list, null, 2));
       return { ok: true, file, count: list.length };
     },
 
     async 'dialog-log'() {
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       const file = join(absDir, `dialogs-${ts}.json`);
-      writeFileSync(file, JSON.stringify(page.dialogLog, null, 2));
+      writeFilePrivate(file, JSON.stringify(page.dialogLog, null, 2));
       return { ok: true, file, count: page.dialogLog.length };
     },
 
     async eval({ expression }) {
+      // Firefox/BiDi has no page.cdp — evaluate over BiDi in the active context.
+      if (!page.cdp) {
+        try {
+          // Evaluate the RAW expression: script.evaluate has eval-semantics, so
+          // statement lists ("var x = 2; x * 3") work and yield the completion
+          // value — matching the CDP Runtime.evaluate path. (An earlier
+          // `await (${expression})` wrapper flattened objects but broke every
+          // statement-form expression with a SyntaxError.) BiDi returns a
+          // {type,value} remote value; deserializeBiDi walks it back to the plain
+          // JS value CDP's returnByValue produces.
+          const res = await page.bidi.send('script.evaluate', {
+            expression, target: { context: page.context }, awaitPromise: true,
+          });
+          if (res.type === 'exception') {
+            return { ok: false, error: res.exceptionDetails?.text || 'eval error' };
+          }
+          return { ok: true, value: deserializeBiDi(res.result) };
+        } catch (err) {
+          return { ok: false, error: err.message || 'eval error' };
+        }
+      }
       const result = await page.cdp.send('Runtime.evaluate', {
         expression,
         returnByValue: true,
@@ -333,7 +522,7 @@ export async function runDaemon(opts, outputDir, initialUrl) {
       if (level) logs = logs.filter((l) => l.type === level);
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       const file = join(absDir, `console-${ts}.json`);
-      writeFileSync(file, JSON.stringify(logs, null, 2));
+      writeFilePrivate(file, JSON.stringify(logs, null, 2));
       if (clear) consoleLogs.length = 0;
       return { ok: true, file, count: logs.length };
     },
@@ -343,7 +532,7 @@ export async function runDaemon(opts, outputDir, initialUrl) {
       if (failed) logs = logs.filter((l) => l.status === 0 || l.status >= 400);
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       const file = join(absDir, `network-${ts}.json`);
-      writeFileSync(file, JSON.stringify(logs, null, 2));
+      writeFilePrivate(file, JSON.stringify(logs, null, 2));
       return { ok: true, file, count: logs.length };
     },
 
@@ -364,8 +553,11 @@ export async function runDaemon(opts, outputDir, initialUrl) {
   // Start HTTP server on random port
   const server = createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/status') {
+      // Liveness only — no pid. /status is the one pre-auth endpoint, and
+      // isAlive() just checks res.ok; the pid clients show comes from
+      // session.json (owner-only), so nothing consumes a pid here.
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, pid: process.pid }));
+      res.end(JSON.stringify({ ok: true }));
       return;
     }
 
@@ -375,16 +567,27 @@ export async function runDaemon(opts, outputDir, initialUrl) {
       return;
     }
 
-    // Enforce request body size limit (1 MB) to prevent memory exhaustion
-    const MAX_BODY = 1024 * 1024;
+    // Require the per-session token. Rejects any local process that hasn't
+    // read session.json (which is owner-only). Constant-time compare.
+    if (!tokenMatches(authToken, req.headers['x-swiftbrowse-token'])) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'Unauthorized: missing or invalid token' }));
+      return;
+    }
+
+    // Cap the request body. Post-auth, single local user, but an unbounded
+    // `body +=` is a needless memory-DoS foot-gun. 16 MB covers any realistic
+    // eval expression / typed text.
+    const MAX_BODY = 16 * 1024 * 1024;
     let body = '';
     for await (const chunk of req) {
-      if (body.length + chunk.length > MAX_BODY) {
+      body += chunk;
+      if (body.length > MAX_BODY) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: 'Request body too large (max 1 MB)' }));
+        res.end(JSON.stringify({ ok: false, error: 'Request body too large' }));
+        req.destroy();
         return;
       }
-      body += chunk;
     }
 
     let parsed;
@@ -396,16 +599,16 @@ export async function runDaemon(opts, outputDir, initialUrl) {
       return;
     }
 
-    const { command, args } = parsed;
-    // Use Object.hasOwn to prevent prototype pollution (e.g. command = '__proto__')
-    if (typeof command !== 'string' || !Object.hasOwn(handlers, command)) {
+    const { command, args } = parsed || {};
+    const handler = typeof command === 'string' && Object.hasOwn(handlers, command) ? handlers[command] : null;
+    if (!handler) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: `Unknown command: ${command}` }));
       return;
     }
 
     try {
-      const result = await handlers[command](args || {});
+      const result = await handler(args || {});
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
 
@@ -420,30 +623,34 @@ export async function runDaemon(opts, outputDir, initialUrl) {
     }
   });
 
-  await new Promise((resolve) => {
+  /** @type {Promise<void>} */
+  const listening = new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => resolve());
   });
+  await listening;
 
-  const port = server.address().port;
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('Daemon server failed to bind to a TCP port');
+  }
+  const port = address.port;
 
-  // Write session.json so parent/clients can find us
+  // Write session.json so parent/clients can find us. Owner-only: it carries
+  // the auth token that gates /command.
   const sessionPath = join(absDir, SESSION_FILE);
-  writeFileSync(sessionPath, JSON.stringify({
+  writeFilePrivate(sessionPath, JSON.stringify({
     port,
     pid: process.pid,
+    token: authToken,
     startedAt: new Date().toISOString(),
+    // Persisted so `status`/`doctor` can report the live engine + feature set
+    // without an HTTP round-trip (page.engine/capabilities, added in v0.21.0).
+    engine: page.engine,
+    capabilities: page.capabilities,
   }));
 
   // Handle SIGTERM gracefully
   process.on('SIGTERM', async () => {
-    try { await page.close(); } catch { /* already closed */ }
-    if (existsSync(sessionPath)) unlinkSync(sessionPath);
-    server.close();
-    process.exit(0);
-  });
-
-  // Handle SIGINT (Ctrl+C) — Windows does not send SIGTERM on Ctrl+C
-  process.on('SIGINT', async () => {
     try { await page.close(); } catch { /* already closed */ }
     if (existsSync(sessionPath)) unlinkSync(sessionPath);
     server.close();

@@ -1,0 +1,19 @@
+SwiftBrowse
+Copyright 2026 Saksham Loonker and SwiftBrowse contributors
+
+This product includes software developed as BareBrowse:
+barebrowse
+Copyright 2026 hamr0
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Upstream source: https://github.com/hamr0/barebrowse
+Integrated through commit 25f0582 (BareBrowse v0.23.0).
+SwiftBrowse modifications include cross-platform discovery and cookie handling,
+structured extraction, batch browsing, agent tools, and integration hardening.
+The original SwiftBrowse v0.5.0 MIT notice is preserved in LICENSE-MIT.
+The combined distribution is licensed under Apache-2.0; see LICENSE.

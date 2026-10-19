@@ -1,22 +1,57 @@
 {
   "name": "swiftbrowse",
-  "version": "0.5.0",
-  "description": "Authenticated web browsing for autonomous agents via CDP. URL in, pruned ARIA snapshot out.",
+  "version": "0.24.0",
+  "description": "Cross-platform browser automation for agents: Chromium + Firefox, authenticated browsing, ARIA snapshots and structured extraction.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/saksham-loonker/swiftbrowse.git"
+  },
+  "homepage": "https://github.com/saksham-loonker/swiftbrowse#readme",
+  "bugs": "https://github.com/saksham-loonker/swiftbrowse/issues",
   "type": "module",
   "main": "src/index.js",
+  "types": "./types/index.d.ts",
   "exports": {
-    ".": "./src/index.js",
-    "./swiftagent": "./src/swiftagent.js",
-    "./bareagent": "./src/swiftagent.js"
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./bareagent": {
+      "types": "./types/bareagent.d.ts",
+      "default": "./src/bareagent.js"
+    },
+    "./swiftagent": {
+      "types": "./types/swiftagent.d.ts",
+      "default": "./src/swiftagent.js"
+    }
   },
   "bin": {
-    "swiftbrowse": "cli.js"
+    "swiftbrowse": "./cli.js"
   },
+  "files": [
+    "src/",
+    "types/",
+    "commands/swiftbrowse/",
+    "cli.js",
+    "mcp-server.js",
+    "swiftbrowse.context.md",
+    "README.md",
+    "CHANGELOG.md",
+    "NOTICE",
+    "LICENSE",
+    "LICENSE-MIT"
+  ],
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test test/unit/*.test.js test/integration/*.test.js"
+    "test": "node --test test/unit/*.test.js test/integration/*.test.js",
+    "test:unit": "node --test test/unit/*.test.js",
+    "test:integration": "node --test test/integration/*.test.js",
+    "typecheck": "tsc --noEmit",
+    "build:types": "tsc",
+    "check:lockfile": "node scripts/check-lockfile.mjs",
+    "prepack": "npm run build:types"
   },
   "keywords": [
     "browser",
@@ -29,5 +64,16 @@
     "mcp",
     "headless"
   ],
-  "license": "MIT"
+  "optionalDependencies": {
+    "wearehere": "1.0.0"
+  },
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "ws": "^8.21.0"
+  }
 }

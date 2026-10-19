@@ -5,42 +5,47 @@
  * Run: node --test test/integration/browse.test.js
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { browse, connect } from '../../src/index.js';
+import { startExamplePage } from '../fixtures/example-page.js';
+
+let example;
+before(async () => { example = await startExamplePage(); });
+after(() => example.close());
 
 describe('browse()', () => {
   it('returns ARIA snapshot for a public page', async () => {
-    const snapshot = await browse('https://example.com');
+    const snapshot = await browse(example.url);
     assert.ok(snapshot.length > 0, 'snapshot should not be empty');
     assert.ok(snapshot.includes('Example Domain'), 'should contain page title');
   });
 
   it('includes heading and ref markers', async () => {
-    const snapshot = await browse('https://example.com');
+    const snapshot = await browse(example.url);
     assert.ok(snapshot.includes('heading'), 'should have heading role');
     assert.ok(snapshot.includes('[ref='), 'should have ref markers for interaction');
     // In browse mode, links should also be present
-    const browseSnap = await browse('https://example.com', { pruneMode: 'browse' });
+    const browseSnap = await browse(example.url, { pruneMode: 'browse' });
     assert.ok(browseSnap.includes('link'), 'browse mode should have link role');
   });
 
   it('prunes by default (act mode)', async () => {
-    const pruned = await browse('https://example.com');
-    const raw = await browse('https://example.com', { prune: false });
-    // Pruned should be smaller or equal (example.com is tiny, may not differ much)
+    const pruned = await browse(example.url);
+    const raw = await browse(example.url, { prune: false });
+    // Pruned should be smaller or equal (the local example page is tiny, may not differ much)
     assert.ok(pruned.length <= raw.length, 'pruned should not be larger than raw');
   });
 
   it('browse mode preserves paragraphs', async () => {
-    const snapshot = await browse('https://example.com', { pruneMode: 'browse' });
+    const snapshot = await browse(example.url, { pruneMode: 'browse' });
     assert.ok(snapshot.includes('paragraph'), 'browse mode should keep paragraphs');
     assert.ok(snapshot.includes('documentation examples'), 'should keep paragraph text');
   });
 
   it('act mode drops paragraphs', async () => {
-    const snapshot = await browse('https://example.com', { pruneMode: 'act' });
-    // Act mode on example.com: only heading survives (no interactive elements)
+    const snapshot = await browse(example.url, { pruneMode: 'act' });
+    // Act mode on the local example page (test/fixtures/example-page.js): only heading survives (no interactive elements)
     assert.ok(snapshot.includes('heading'), 'should keep heading');
     // paragraph content should be gone
     assert.equal(snapshot.includes('documentation examples'), false, 'should drop paragraph text');
@@ -56,21 +61,21 @@ describe('browse()', () => {
 
   it('can disable cookies', async () => {
     // Should not throw even with cookies: false
-    const snapshot = await browse('https://example.com', { cookies: false });
+    const snapshot = await browse(example.url, { cookies: false });
     assert.ok(snapshot.includes('Example Domain'));
   });
 
   it('can disable pruning', async () => {
-    const snapshot = await browse('https://example.com', { prune: false });
+    const snapshot = await browse(example.url, { prune: false });
     assert.ok(snapshot.includes('Example Domain'));
     // Raw output should have InlineTextBox filtered by aria.js but not tree-pruned
     assert.ok(snapshot.includes('RootWebArea'), 'raw should keep RootWebArea');
   });
 
   it('snapshot starts with URL line', async () => {
-    const snapshot = await browse('https://example.com');
+    const snapshot = await browse(example.url);
     const firstLine = snapshot.split('\n')[0];
-    assert.equal(firstLine, '# https://example.com', 'first line should be the page URL');
+    assert.equal(firstLine, `url: ${example.url}`, 'first line should be the page URL');
   });
 });
 
@@ -78,7 +83,7 @@ describe('connect()', () => {
   it('creates a long-lived session and navigates', async () => {
     const page = await connect();
     try {
-      await page.goto('https://example.com');
+      await page.goto(example.url);
       const snapshot = await page.snapshot();
       assert.ok(snapshot.includes('Example Domain'), 'should see page content');
     } finally {
@@ -89,7 +94,7 @@ describe('connect()', () => {
   it('supports multiple navigations in one session', async () => {
     const page = await connect();
     try {
-      await page.goto('https://example.com');
+      await page.goto(example.url);
       const snap1 = await page.snapshot();
       assert.ok(snap1.includes('Example Domain'));
 
@@ -104,10 +109,10 @@ describe('connect()', () => {
   it('snapshot starts with URL line', async () => {
     const page = await connect();
     try {
-      await page.goto('https://example.com');
+      await page.goto(example.url);
       const snapshot = await page.snapshot();
       const firstLine = snapshot.split('\n')[0];
-      assert.equal(firstLine, '# https://example.com/', 'first line should be the page URL');
+      assert.equal(firstLine, `url: ${example.url}/`, 'first line should be the page URL');
     } finally {
       await page.close();
     }
@@ -116,10 +121,10 @@ describe('connect()', () => {
   it('raw snapshot starts with URL line', async () => {
     const page = await connect();
     try {
-      await page.goto('https://example.com');
+      await page.goto(example.url);
       const raw = await page.snapshot(false);
       const firstLine = raw.split('\n')[0];
-      assert.equal(firstLine, '# https://example.com/', 'raw snapshot first line should be the page URL');
+      assert.equal(firstLine, `url: ${example.url}/`, 'raw snapshot first line should be the page URL');
     } finally {
       await page.close();
     }
@@ -128,9 +133,61 @@ describe('connect()', () => {
   it('snapshot accepts prune: false for raw output', async () => {
     const page = await connect();
     try {
-      await page.goto('https://example.com');
+      await page.goto(example.url);
       const raw = await page.snapshot(false);
       assert.ok(raw.includes('RootWebArea'), 'raw should keep RootWebArea');
+    } finally {
+      await page.close();
+    }
+  });
+});
+
+describe('createTab()', () => {
+  it('creates and closes tabs without leaking', async () => {
+    const page = await connect();
+    try {
+      const before = await page.tabs();
+
+      // Open 5 tabs, navigate each, then close
+      const tabs = [];
+      for (let i = 0; i < 5; i++) {
+        const tab = await page.createTab();
+        await tab.goto(example.url);
+        tabs.push(tab);
+      }
+
+      const during = await page.tabs();
+      assert.equal(during.length, before.length + 5, 'should have 5 extra tabs open');
+
+      for (const tab of tabs) {
+        await tab.close();
+      }
+
+      // Target.getTargets is eventually consistent — Chromium propagates
+      // the closed-target list a tick or two after the close call resolves.
+      // Under parallel test load we've observed ~50-200ms lag, so poll
+      // briefly instead of asserting synchronously.
+      let after;
+      const deadline = Date.now() + 3000;
+      do {
+        after = await page.tabs();
+        if (after.length === before.length) break;
+        await new Promise((r) => setTimeout(r, 50));
+      } while (Date.now() < deadline);
+      assert.equal(after.length, before.length, 'all tabs should be closed — no zombies');
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('tab close is idempotent', async () => {
+    const page = await connect();
+    try {
+      const tab = await page.createTab();
+      await tab.goto(example.url);
+      await tab.close();
+      // Second close should not throw
+      await tab.close().catch(() => {});
     } finally {
       await page.close();
     }

@@ -13,23 +13,13 @@ const SESSION_FILE = 'session.json';
 
 /**
  * Read session.json from the output directory.
- * @returns {{ port: number, pid: number, startedAt: string } | null}
+ * @returns {{ port: number, pid: number, token?: string, startedAt: string } | null}
  */
 export function readSession(outputDir) {
   const sessionPath = join(resolve(outputDir), SESSION_FILE);
   if (!existsSync(sessionPath)) return null;
   try {
-    const data = JSON.parse(readFileSync(sessionPath, 'utf8'));
-    // Validate session fields to reject partial writes or tampered files
-    if (
-      typeof data.port !== 'number' ||
-      data.port < 1 || data.port > 65535 ||
-      !Number.isInteger(data.port) ||
-      typeof data.pid !== 'number'
-    ) {
-      return null;
-    }
-    return data;
+    return JSON.parse(readFileSync(sessionPath, 'utf8'));
   } catch {
     return null;
   }
@@ -53,46 +43,32 @@ export async function isAlive(outputDir) {
 
 /**
  * Send a command to the running daemon.
- * @param {string} command - Command name
- * @param {object} args - Command arguments
- * @param {string} outputDir - Session directory
- * @param {object} [opts]
- * @param {number} [opts.timeout=60000] - Request timeout in ms
- * @param {number} [opts.retries=1] - Retry count on transient 5xx errors
  * @returns {Promise<object>} The daemon's response
  */
-export async function sendCommand(command, args, outputDir, opts = {}) {
+export async function sendCommand(command, args, outputDir) {
   const session = readSession(outputDir);
   if (!session) throw new Error('No active session. Run `swiftbrowse open` first.');
 
-  const timeout = opts.timeout ?? 60000;
-  const maxAttempts = 1 + (opts.retries ?? 1);
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    let res;
-    try {
-      res = await fetch(`http://127.0.0.1:${session.port}/command`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command, args }),
-        signal: AbortSignal.timeout(timeout),
-      });
-    } catch {
-      // ECONNREFUSED / ECONNRESET — daemon died or close command exited it
-      if (command === 'close') return { ok: true };
-      if (attempt < maxAttempts) {
-        await new Promise((r) => setTimeout(r, 250 * attempt));
-        continue;
-      }
-      throw new Error(`Daemon not responding (pid ${session.pid}). Session may be stale.`);
+  let res;
+  try {
+    res = await fetch(`http://127.0.0.1:${session.port}/command`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // Authenticate to the daemon with the per-session token from session.json.
+        ...(session.token ? { 'x-swiftbrowse-token': session.token } : {}),
+      },
+      body: JSON.stringify({ command, args }),
+      signal: AbortSignal.timeout(60000),
+    });
+  } catch (err) {
+    // ECONNREFUSED / ECONNRESET — daemon died
+    if (command === 'close') {
+      // Expected: daemon exited before response
+      return { ok: true };
     }
-
-    // Retry on transient server errors (502, 503, 504)
-    if (res.status >= 500 && attempt < maxAttempts) {
-      await new Promise((r) => setTimeout(r, 250 * attempt));
-      continue;
-    }
-
-    return res.json();
+    throw new Error(`Daemon not responding (pid ${session.pid}). Session may be stale.`);
   }
+
+  return res.json();
 }

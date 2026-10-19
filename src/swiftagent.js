@@ -1,48 +1,44 @@
 /**
- * swiftagent.js — Tool adapter for agent loops (Anthropic, OpenAI, etc.)
+ * bareagent.js — Tool adapter for bareagent's Loop.
  *
  * Usage:
- *   import { createBrowseTools } from 'swiftbrowse/swiftagent';
+ *   import { createBrowseTools } from 'swiftbrowse/src/bareagent.js';
  *   const { tools, close } = createBrowseTools();
- *   // pass tools to your agent loop
+ *   const result = await loop.run(messages, tools);
  *   await close();
  *
- * Every action tool runs smartSettle() after the action:
- *   - Races Page.loadEventFired vs network-idle (200ms quiet window, 2.5s max)
- *   - Resolves the moment the page is stable — no fixed delays
- * Then returns a fresh snapshot so the LLM always sees the result.
+ * Action tools auto-return a fresh snapshot so the LLM always sees the result.
+ * 300ms settle delay after actions for DOM updates.
  */
+
+/// <reference path="./wearehere.d.ts" />
 
 import { browse, connect } from './index.js';
+import { formatReadable } from './readable.js';
+
+// Optional: privacy assessment via wearehere
+let assessFn = null;
+try {
+  ({ assess: assessFn } = await import('wearehere'));
+} catch {}
+
+const SETTLE_MS = 300;
+const settle = () => new Promise((r) => setTimeout(r, SETTLE_MS));
 
 /**
- * Wait for the page to become stable after an action.
- * Races navigation load event against network idle — whichever wins.
- * Never throws; safe to call after any action.
- * @param {object} page - Handle returned by connect()
+ * @typedef {object} BrowseTool
+ * @property {string} name
+ * @property {string} description
+ * @property {object} parameters - JSON-schema-shaped parameter spec
+ * @property {(args?: any) => Promise<any>} execute
  */
-async function smartSettle(page) {
-  await Promise.race([
-    page.waitForNavigation(2500),
-    page.waitForNetworkIdle({ timeout: 2500, idle: 200 }),
-  ]).catch(() => {});
-}
 
 /**
- * Create swiftagent-compatible browse tools.
- *
- * @param {object} [opts] - Options forwarded to connect()
- * @param {'headless'|'headed'|'hybrid'} [opts.mode='headless']
- * @param {boolean} [opts.cookies=true] - Inject user's browser cookies
- * @param {boolean} [opts.consent=true] - Auto-dismiss cookie banners
- * @param {string}  [opts.browser] - Browser binary hint
- * @param {string}  [opts.viewport] - Viewport size e.g. "1280x720"
- * @param {string}  [opts.storageState] - Path to saved auth state JSON
- * @param {boolean} [opts.snapshotAfterAction=true] - Return snapshot after actions
+ * Create bareagent-compatible browse tools.
+ * @param {object} [opts] - Options passed to connect() for session tools
  * @returns {{ tools: Array, close: () => Promise<void> }}
  */
 export function createBrowseTools(opts = {}) {
-  const snapshotAfterAction = opts.snapshotAfterAction !== false;
   let _page = null;
 
   async function getPage() {
@@ -50,256 +46,134 @@ export function createBrowseTools(opts = {}) {
     return _page;
   }
 
-  /**
-   * Run an action fn(page), settle, then optionally return a snapshot.
-   * @param {(page: object) => Promise<void>} fn
-   */
-  async function act(fn) {
+  async function actionAndSnapshot(fn) {
     const page = await getPage();
     await fn(page);
-    await smartSettle(page);
-    if (snapshotAfterAction) return await page.snapshot();
-    return 'Action completed.';
+    await settle();
+    return await page.snapshot();
   }
 
-  /**
-   * Search snapshot lines for the first element matching text (and optionally role).
-   * Snapshot line format: `  - role "name" [props] [ref=N]`
-   * @param {string} snapshotText
-   * @param {string} text - Case-insensitive partial match against the line
-   * @param {string} [role] - Optional ARIA role to narrow the match
-   * @returns {{ ref: string, line: string } | { ref: null, message: string }}
-   */
-  function findInSnapshot(snapshotText, text, role) {
-    const needle = text.toLowerCase();
-    const roleNeedle = role ? role.toLowerCase() : null;
-    for (const line of snapshotText.split('\n')) {
-      const refMatch = line.match(/\[ref=(\w+)\]/);
-      if (!refMatch) continue;
-      const lower = line.toLowerCase();
-      if (!lower.includes(needle)) continue;
-      if (roleNeedle && !lower.includes(roleNeedle)) continue;
-      return { ref: refMatch[1], line: line.trim() };
-    }
-    const qualifier = role ? ` with role "${role}"` : '';
-    return { ref: null, message: `No element found matching "${text}"${qualifier}` };
-  }
-
+  /** @type {BrowseTool[]} */
   const tools = [
-    // ── Navigation ──────────────────────────────────────────────────────────
-
     {
       name: 'browse',
-      description:
-        'One-shot stateless browse: navigate to a URL and return a pruned ARIA snapshot. ' +
-        'Launches its own isolated browser — does NOT share cookies or session state. ' +
-        'Use goto instead whenever you need to preserve login state or act on the page.',
+      description: 'One-shot: navigate to a URL and return a pruned ARIA snapshot. Stateless.',
       parameters: {
         type: 'object',
         properties: {
-          url: { type: 'string', description: 'Full URL including scheme (https://...)' },
+          url: { type: 'string', description: 'URL to browse' },
+          pruneMode: { type: 'string', enum: ['act', 'read'], description: '"act" (default) for interactive elements only; "read" for paragraphs and long text (articles/docs).' },
         },
         required: ['url'],
       },
-      execute: async ({ url }) => await browse(url, opts),
+      execute: async ({ url, pruneMode }) => await browse(url, pruneMode ? { ...opts, pruneMode } : opts),
     },
-
     {
       name: 'goto',
-      description:
-        'Navigate the current browser session to a URL. ' +
-        'Preserves cookies, storage, and login state from previous actions. ' +
-        'Waits for the page to fully load, then returns a pruned ARIA snapshot.',
+      description: 'Navigate to a URL and return the page snapshot.',
       parameters: {
         type: 'object',
         properties: {
-          url: { type: 'string', description: 'Full URL including scheme (https://...)' },
+          url: { type: 'string', description: 'URL to navigate to' },
         },
         required: ['url'],
       },
-      execute: async ({ url }) => act((page) => page.goto(url)),
+      execute: async ({ url }) => actionAndSnapshot((page) => page.goto(url)),
     },
-
-    {
-      name: 'back',
-      description:
-        'Go back to the previous page in browser history. ' +
-        'Returns the updated snapshot. Throws if there is no previous page.',
-      parameters: { type: 'object', properties: {} },
-      execute: async () => act((page) => page.goBack()),
-    },
-
-    {
-      name: 'forward',
-      description:
-        'Go forward to the next page in browser history. ' +
-        'Returns the updated snapshot. Throws if there is no next page.',
-      parameters: { type: 'object', properties: {} },
-      execute: async () => act((page) => page.goForward()),
-    },
-
-    // ── Observation ─────────────────────────────────────────────────────────
-
     {
       name: 'snapshot',
-      description:
-        'Get the current page as a pruned ARIA accessibility tree. ' +
-        'Returns a YAML-like tree where interactive elements have [ref=N] markers. ' +
-        'Always call this after waitFor or waitForNavigation to refresh stale refs. ' +
-        'Refs become invalid after any navigation — re-snapshot before acting.',
+      description: 'Get the current ARIA snapshot. Returns a YAML-like tree with [ref=N] markers on interactive elements.',
+      parameters: {
+        type: 'object',
+        properties: {
+          pruneMode: { type: 'string', enum: ['act', 'read'], description: '"act" (default) for interactive elements only; "read" for paragraphs and long text (articles/docs).' },
+        },
+      },
+      execute: async (/** @type {{ pruneMode?: string }} */ { pruneMode } = {}) => {
+        const page = await getPage();
+        return await page.snapshot(pruneMode ? { mode: pruneMode } : undefined);
+      },
+    },
+    {
+      name: 'readable',
+      description: 'Extract the main article as clean reading text (title + body prose, chrome stripped — Firefox Reader View engine). Use ONLY to READ/SUMMARISE article-like pages (news, blogs, docs, wiki). For interacting, or for non-article pages, use snapshot. Returns a low-confidence hint to use snapshot when the page is not an article.',
       parameters: { type: 'object', properties: {} },
       execute: async () => {
         const page = await getPage();
-        return await page.snapshot();
+        return formatReadable(await page.readable());
       },
     },
-
-    {
-      name: 'find',
-      description:
-        'Find an element on the current page by visible text or ARIA label. ' +
-        'Returns the ref of the first matching element. ' +
-        'Optionally narrow by ARIA role (button, link, textbox, checkbox, combobox, etc.). ' +
-        'Use this instead of scanning the snapshot yourself.',
-      parameters: {
-        type: 'object',
-        properties: {
-          text: {
-            type: 'string',
-            description: 'Visible text or ARIA label to search for (case-insensitive, partial match)',
-          },
-          role: {
-            type: 'string',
-            description: 'Optional ARIA role to narrow search (e.g. "button", "link", "textbox")',
-          },
-        },
-        required: ['text'],
-      },
-      execute: async ({ text, role }) => {
-        const page = await getPage();
-        const snapshotText = await page.snapshot();
-        return findInSnapshot(snapshotText, text, role);
-      },
-    },
-
-    {
-      name: 'screenshot',
-      description:
-        'Take a screenshot of the current page or a specific element. Returns base64-encoded image data. ' +
-        'Use when visual context is needed that ARIA cannot express: charts, images, CAPTCHAs, layouts. ' +
-        'Provide selector to crop to a specific element instead of the full page. ' +
-        'Prefer snapshot for structured interaction; screenshot for visual inspection.',
-      parameters: {
-        type: 'object',
-        properties: {
-          format: {
-            type: 'string',
-            enum: ['png', 'jpeg', 'webp'],
-            description: 'Image format (default: png)',
-          },
-          selector: {
-            type: 'string',
-            description: 'CSS selector to crop the screenshot to a specific element (optional)',
-          },
-        },
-      },
-      execute: async ({ format, selector } = {}) => {
-        const page = await getPage();
-        return await page.screenshot({ format, selector });
-      },
-    },
-
-    {
-      name: 'pdf',
-      description:
-        'Export the current page as a PDF. Returns base64-encoded PDF data. ' +
-        'Use for saving printable content, reports, or articles.',
-      parameters: {
-        type: 'object',
-        properties: {
-          landscape: {
-            type: 'boolean',
-            description: 'Landscape orientation (default: false)',
-          },
-        },
-      },
-      execute: async ({ landscape } = {}) => {
-        const page = await getPage();
-        return await page.pdf({ landscape });
-      },
-    },
-
-    // ── Interaction ──────────────────────────────────────────────────────────
-
     {
       name: 'click',
-      description:
-        'Click an element by its [ref=N] from the snapshot. ' +
-        'Returns the updated snapshot after the click and any resulting navigation or DOM update. ' +
-        'For links: triggers navigation. For buttons: triggers the action. ' +
-        'Refs expire after navigation — call snapshot again if the page changed.',
+      description: 'Click an element by its ref from the snapshot. Returns the updated snapshot.',
       parameters: {
         type: 'object',
         properties: {
-          ref: { type: 'string', description: 'Element ref from snapshot (the N in [ref=N])' },
+          ref: { type: 'string', description: 'Element ref from snapshot' },
         },
         required: ['ref'],
       },
-      execute: async ({ ref }) => act((page) => page.click(ref)),
+      execute: async ({ ref }) => actionAndSnapshot((page) => page.click(ref)),
     },
-
     {
       name: 'type',
-      description:
-        'Type text into an input, textarea, or contenteditable element. ' +
-        'Triggers keyboard and input events that React/Vue/Angular listen to. ' +
-        'Set clear=true to replace existing content; omit to append. ' +
-        'Returns the updated snapshot.',
+      description: 'Type text into an element by its ref. Returns the updated snapshot.',
       parameters: {
         type: 'object',
         properties: {
           ref: { type: 'string', description: 'Element ref from snapshot' },
           text: { type: 'string', description: 'Text to type' },
-          clear: {
-            type: 'boolean',
-            description: 'Clear existing content before typing (default: false)',
-          },
+          clear: { type: 'boolean', description: 'Clear existing content first' },
         },
         required: ['ref', 'text'],
       },
-      execute: async ({ ref, text, clear }) => act((page) => page.type(ref, text, { clear })),
+      execute: async ({ ref, text, clear }) => actionAndSnapshot((page) => page.type(ref, text, { clear })),
     },
-
     {
       name: 'press',
-      description:
-        'Press a special keyboard key. Returns the updated snapshot. ' +
-        'Common uses: Enter to submit forms, Tab to advance focus, ' +
-        'Escape to close modals/dropdowns, ArrowDown/ArrowUp for list navigation.',
+      description: 'Press a special key (Enter, Tab, Escape, etc.). Returns the updated snapshot.',
       parameters: {
         type: 'object',
         properties: {
-          key: {
-            type: 'string',
-            enum: [
-              'Enter', 'Tab', 'Escape', 'Backspace', 'Delete',
-              'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
-              'Home', 'End', 'PageUp', 'PageDown', 'Space',
-            ],
-            description: 'Key to press',
-          },
+          key: { type: 'string', description: 'Key name (Enter, Tab, Escape, Backspace, Delete, arrows, Home, End, PageUp, PageDown, Space)' },
         },
         required: ['key'],
       },
-      execute: async ({ key }) => act((page) => page.press(key)),
+      execute: async ({ key }) => actionAndSnapshot((page) => page.press(key)),
     },
-
+    {
+      name: 'scroll',
+      description: 'Scroll the page up or down. Pass direction ("up"/"down") or a numeric deltaY. Returns the updated snapshot.',
+      parameters: {
+        type: 'object',
+        properties: {
+          direction: { type: 'string', enum: ['up', 'down'], description: 'Scroll direction — "up" or "down" (scrolls ~3 screen-heights)' },
+          deltaY: { type: 'number', description: 'Pixels to scroll (positive=down, negative=up). Overrides direction if both given.' },
+        },
+      },
+      execute: async ({ direction, deltaY }) => {
+        let dy = deltaY;
+        if (dy == null && direction) dy = direction === 'up' ? -900 : 900;
+        if (dy == null || typeof dy !== 'number') throw new Error('scroll requires "direction" or numeric "deltaY"');
+        return actionAndSnapshot((page) => page.scroll(dy));
+      },
+    },
+    {
+      name: 'select',
+      description: 'Select a value in a dropdown/select element. Returns the updated snapshot.',
+      parameters: {
+        type: 'object',
+        properties: {
+          ref: { type: 'string', description: 'Element ref from snapshot' },
+          value: { type: 'string', description: 'Value or visible text to select' },
+        },
+        required: ['ref', 'value'],
+      },
+      execute: async ({ ref, value }) => actionAndSnapshot((page) => page.select(ref, value)),
+    },
     {
       name: 'hover',
-      description:
-        'Hover the mouse over an element to reveal tooltips, dropdown menus, or hover-triggered content. ' +
-        'Returns the updated snapshot showing any newly revealed elements. ' +
-        'Use before click when a menu only becomes visible on hover.',
+      description: 'Hover over an element by its ref. Returns the updated snapshot.',
       parameters: {
         type: 'object',
         properties: {
@@ -307,152 +181,129 @@ export function createBrowseTools(opts = {}) {
         },
         required: ['ref'],
       },
-      execute: async ({ ref }) => act((page) => page.hover(ref)),
+      execute: async ({ ref }) => actionAndSnapshot((page) => page.hover(ref)),
     },
-
     {
-      name: 'select',
-      description:
-        'Select a value in a <select> dropdown or ARIA combobox. ' +
-        'Matches by option value or visible text (case-sensitive). ' +
-        'Returns the updated snapshot.',
-      parameters: {
-        type: 'object',
-        properties: {
-          ref: { type: 'string', description: 'Ref of the select or combobox element' },
-          value: { type: 'string', description: 'Option value or visible text to select' },
-        },
-        required: ['ref', 'value'],
-      },
-      execute: async ({ ref, value }) => act((page) => page.select(ref, value)),
+      name: 'back',
+      description: 'Go back in browser history. Returns the updated snapshot.',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => actionAndSnapshot((page) => page.goBack()),
     },
-
     {
-      name: 'scroll',
-      description:
-        'Scroll the page vertically. Returns the updated snapshot, ' +
-        'which may contain newly visible elements not in the previous snapshot. ' +
-        'Positive deltaY scrolls down; negative scrolls up. Typical step: 400px.',
-      parameters: {
-        type: 'object',
-        properties: {
-          deltaY: {
-            type: 'number',
-            description: 'Pixels to scroll: positive=down, negative=up (e.g. 400)',
-          },
-        },
-        required: ['deltaY'],
-      },
-      execute: async ({ deltaY }) => act((page) => page.scroll(deltaY)),
+      name: 'forward',
+      description: 'Go forward in browser history. Returns the updated snapshot.',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => actionAndSnapshot((page) => page.goForward()),
     },
-
     {
       name: 'drag',
-      description:
-        'Drag one element and drop it onto another. ' +
-        'Use for reordering list items, moving kanban cards, or range slider controls. ' +
-        'Returns the updated snapshot.',
+      description: 'Drag one element to another by their refs. Returns the updated snapshot.',
       parameters: {
         type: 'object',
         properties: {
-          fromRef: { type: 'string', description: 'Ref of the element to drag (source)' },
-          toRef: { type: 'string', description: 'Ref of the element to drop onto (target)' },
+          fromRef: { type: 'string', description: 'Source element ref' },
+          toRef: { type: 'string', description: 'Target element ref' },
         },
         required: ['fromRef', 'toRef'],
       },
-      execute: async ({ fromRef, toRef }) => act((page) => page.drag(fromRef, toRef)),
+      execute: async ({ fromRef, toRef }) => actionAndSnapshot((page) => page.drag(fromRef, toRef)),
     },
-
     {
       name: 'upload',
-      description:
-        'Upload files to a file input element. ' +
-        'Provide absolute paths on the host machine. Returns the updated snapshot.',
+      description: 'Upload files to a file input element. Returns the updated snapshot.',
       parameters: {
         type: 'object',
         properties: {
-          ref: { type: 'string', description: 'Ref of the file input element' },
-          files: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'Absolute file paths to upload (e.g. ["/home/user/doc.pdf"])',
-          },
+          ref: { type: 'string', description: 'File input element ref' },
+          files: { type: 'array', items: { type: 'string' }, description: 'Absolute file paths' },
         },
         required: ['ref', 'files'],
       },
-      execute: async ({ ref, files }) => act((page) => page.upload(ref, files)),
+      execute: async ({ ref, files }) => actionAndSnapshot((page) => page.upload(ref, files)),
     },
-
-    // ── Waiting ──────────────────────────────────────────────────────────────
-
-    {
-      name: 'waitFor',
-      description:
-        'Wait until specific text or a CSS selector appears on the page. ' +
-        'Use after triggering async operations (API calls, file loads, animations). ' +
-        'Returns a fresh snapshot when the condition is met. Throws on timeout. ' +
-        'More reliable than fixed sleep delays for dynamic content.',
-      parameters: {
-        type: 'object',
-        properties: {
-          text: {
-            type: 'string',
-            description: 'Wait until this text appears in the page body',
-          },
-          selector: {
-            type: 'string',
-            description: 'Wait until this CSS selector matches an element',
-          },
-          timeout: {
-            type: 'number',
-            description: 'Max wait time in ms (default: 10000)',
-          },
-        },
-      },
-      execute: async ({ text, selector, timeout = 10000 } = {}) => {
-        const page = await getPage();
-        await page.waitFor({ text, selector, timeout });
-        return await page.snapshot();
-      },
-    },
-
-    // ── Tabs ─────────────────────────────────────────────────────────────────
-
     {
       name: 'tabs',
-      description:
-        'List all open browser tabs. ' +
-        'Returns an array of { index, url, title } objects. Use with switchTab.',
+      description: 'List all open tabs. Returns JSON array of { index, url, title }.',
       parameters: { type: 'object', properties: {} },
       execute: async () => {
         const page = await getPage();
-        return await page.tabs();
+        const tabList = await page.tabs();
+        return JSON.stringify(tabList, null, 2);
       },
     },
-
     {
       name: 'switchTab',
-      description:
-        'Switch to a different open tab by its index from the tabs tool. ' +
-        'Returns the snapshot of the newly focused tab.',
+      description: 'Switch to a tab by index. Returns the updated snapshot.',
       parameters: {
         type: 'object',
         properties: {
-          index: {
-            type: 'number',
-            description: 'Tab index from the tabs tool (0-based)',
-          },
+          index: { type: 'number', description: 'Tab index (from tabs tool output)' },
         },
         required: ['index'],
       },
-      execute: async ({ index }) => {
+      execute: async ({ index }) => actionAndSnapshot((page) => page.switchTab(index)),
+    },
+    {
+      name: 'pdf',
+      description: 'Export current page as PDF. Returns base64-encoded PDF data.',
+      parameters: {
+        type: 'object',
+        properties: {
+          landscape: { type: 'boolean', description: 'Landscape orientation (default: false)' },
+        },
+      },
+      execute: async (/** @type {{ landscape?: boolean }} */ { landscape } = {}) => {
         const page = await getPage();
-        await page.switchTab(index);
-        await new Promise((r) => setTimeout(r, 300));
-        return await page.snapshot();
+        return await page.pdf({ landscape });
       },
     },
-
+    {
+      name: 'screenshot',
+      description: 'Take a screenshot of the current page. Returns base64-encoded image.',
+      parameters: {
+        type: 'object',
+        properties: {
+          format: { type: 'string', enum: ['png', 'jpeg', 'webp'], description: 'Image format (default: png)' },
+        },
+      },
+      execute: async (/** @type {{ format?: string }} */ { format } = {}) => {
+        const page = await getPage();
+        return await page.screenshot({ format });
+      },
+    },
+    {
+      name: 'reload',
+      description: 'Reload the current page. Returns the updated snapshot.',
+      parameters: {
+        type: 'object',
+        properties: {
+          ignoreCache: { type: 'boolean', description: 'Bypass HTTP cache (hard reload). Default: false.' },
+        },
+      },
+      execute: async (/** @type {{ ignoreCache?: boolean }} */ { ignoreCache } = {}) => actionAndSnapshot((page) => page.reload({ ignoreCache })),
+    },
+    {
+      name: 'wait_for',
+      description: 'Wait for visible text or a CSS selector to appear on the current page. Returns the updated snapshot once found.',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'Substring that must appear in document.body.innerText' },
+          selector: { type: 'string', description: 'CSS selector that must match document.querySelector' },
+          timeout: { type: 'number', description: 'Timeout in ms (default: 30000)' },
+        },
+      },
+      execute: async (/** @type {{ text?: string, selector?: string, timeout?: number }} */ { text, selector, timeout } = {}) => actionAndSnapshot((page) => page.waitFor({ text, selector, timeout })),
+    },
+    {
+      name: 'downloads',
+      description: 'List files captured via Content-Disposition: attachment downloads during this session. Returns JSON array of { url, suggestedFilename, savedPath, state, totalBytes, receivedBytes } per file.',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => {
+        const page = await getPage();
+        return JSON.stringify(page.downloads.map((d) => ({ ...d })), null, 2);
+      },
+    },
     {
       name: 'extract',
       description:
@@ -545,6 +396,32 @@ export function createBrowseTools(opts = {}) {
       },
     },
   ];
+
+  // Add assess tool if wearehere is installed
+  if (assessFn) {
+    tools.push({
+      name: 'assess',
+      description: 'Privacy assessment of a website. Returns risk score (0-100), per-category breakdown, concerns, and recommendation.',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'URL to assess' },
+          timeout: { type: 'number', description: 'Navigation timeout in ms (default: 30000)' },
+          settle: { type: 'number', description: 'Time to wait for trackers to load, in ms (default: 3000)' },
+        },
+        required: ['url'],
+      },
+      execute: async ({ url, timeout, settle }) => {
+        const page = await connect(opts);
+        try {
+          const result = await assessFn(page, url, { timeout, settle });
+          return JSON.stringify(result, null, 2);
+        } finally {
+          await page.close().catch(() => {});
+        }
+      },
+    });
+  }
 
   return {
     tools,

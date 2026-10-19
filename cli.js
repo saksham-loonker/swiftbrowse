@@ -17,9 +17,15 @@ const cmd = args[0];
 if (args.includes('--daemon-internal')) {
   await runDaemonInternal();
 } else if (cmd === 'mcp') {
-  await import('./mcp-server.js');
+  // Explicitly start the JSON-RPC loop — relying on the previous "isMain
+  // auto-start" guard inside mcp-server.js would silently hang here because
+  // process.argv[1] is cli.js, not mcp-server.js.
+  const { runStdio } = await import('./mcp-server.js');
+  runStdio();
 } else if (cmd === 'install') {
   install();
+} else if (cmd === 'doctor') {
+  await doctor();
 } else if (cmd === 'browse' && args[1]) {
   await oneShot();
 } else if (cmd === 'open') {
@@ -32,6 +38,18 @@ if (args.includes('--daemon-internal')) {
   await cmdProxy('goto', { url: args[1], timeout: parseFlag('--timeout') });
 } else if (cmd === 'snapshot') {
   await cmdProxy('snapshot', { mode: parseFlag('--mode') });
+} else if (cmd === 'text') {
+  await cmdProxy('text', { maxChars: parseFlag('--max-chars') });
+} else if (cmd === 'extract' && args[1]) {
+  await cmdProxy('extract', { selector: args[1], all: hasFlag('--all'), attr: parseFlag('--attr') });
+} else if (cmd === 'links') {
+  await cmdProxy('links');
+} else if (cmd === 'table') {
+  await cmdProxy('table', { selector: args[1] && !args[1].startsWith('--') ? args[1] : undefined });
+} else if (cmd === 'browse-batch') {
+  await cmdBrowseBatch();
+} else if (cmd === 'readable') {
+  await cmdProxy('readable');
 } else if (cmd === 'screenshot') {
   await cmdProxy('screenshot', { format: parseFlag('--format'), selector: parseFlag('--selector') });
 } else if (cmd === 'click' && args[1]) {
@@ -60,6 +78,10 @@ if (args.includes('--daemon-internal')) {
   await cmdProxy('back');
 } else if (cmd === 'forward') {
   await cmdProxy('forward');
+} else if (cmd === 'reload') {
+  await cmdProxy('reload', { ignoreCache: hasFlag('--no-cache') });
+} else if (cmd === 'downloads') {
+  await cmdProxy('downloads');
 } else if (cmd === 'drag' && args[1] && args[2]) {
   await cmdProxy('drag', { fromRef: args[1], toRef: args[2] });
 } else if (cmd === 'upload' && args[1] && args[2]) {
@@ -76,16 +98,6 @@ if (args.includes('--daemon-internal')) {
   await cmdProxy('save-state');
 } else if (cmd === 'dialog-log') {
   await cmdProxy('dialog-log');
-} else if (cmd === 'text') {
-  await cmdProxy('text', { maxChars: parseFlag('--max-chars') });
-} else if (cmd === 'extract' && args[1]) {
-  await cmdProxy('extract', { selector: args[1], all: hasFlag('--all'), attr: parseFlag('--attr') });
-} else if (cmd === 'links') {
-  await cmdProxy('links');
-} else if (cmd === 'table') {
-  await cmdProxy('table', { selector: args[1] || undefined });
-} else if (cmd === 'browse-batch') {
-  await cmdBrowseBatch();
 } else {
   printUsage();
 }
@@ -106,9 +118,11 @@ async function cmdOpen() {
 
   const url = args[1] && !args[1].startsWith('--') ? args[1] : undefined;
   const opts = {
+    engine: parseFlag('--engine'),
     mode: parseFlag('--mode') || 'headless',
     port: parseFlag('--port'),
     cookies: !hasFlag('--no-cookies'),
+    incognito: hasFlag('--incognito') || undefined,
     browser: parseFlag('--browser'),
     timeout: parseFlag('--timeout'),
     pruneMode: parseFlag('--prune-mode') || 'act',
@@ -116,6 +130,11 @@ async function cmdOpen() {
     proxy: parseFlag('--proxy'),
     viewport: parseFlag('--viewport'),
     storageState: parseFlag('--storage-state'),
+    downloadPath: parseFlag('--download-path'),
+    blockAds: hasFlag('--no-block-ads') ? false : undefined,
+    blockUrls: parseFlagAll('--block-urls'),
+    blockPrivateNetwork: hasFlag('--block-private-network') || undefined,
+    uploadDir: parseFlag('--upload-dir') ? resolve(parseFlag('--upload-dir')) : undefined,
   };
 
   try {
@@ -164,8 +183,6 @@ async function cmdProxy(command, cmdArgs) {
     // Print result
     if (result.file && result.count !== undefined) {
       process.stdout.write(`${result.file} (${result.count} entries)\n`);
-    } else if (result.file && result.chars !== undefined) {
-      process.stdout.write(`${result.file} (${result.chars.toLocaleString()} chars)\n`);
     } else if (result.file) {
       process.stdout.write(`${result.file}\n`);
     } else if (result.value !== undefined) {
@@ -196,7 +213,7 @@ async function oneShot() {
   const url = args[1];
   const mode = args[2] || 'headless';
   try {
-    const snapshot = await browse(url, { mode });
+    const snapshot = await browse(url, { mode, incognito: hasFlag('--incognito') || undefined });
     process.stdout.write(snapshot + '\n');
     process.exit(0);
   } catch (err) {
@@ -222,7 +239,7 @@ async function cmdBrowseBatch() {
   }
 
   const outputDir = resolve('.swiftbrowse');
-  mkdirSync(outputDir, { recursive: true });
+  mkdirSync(outputDir, { recursive: true, mode: 0o700 });
   const mode = parseFlag('--mode') || 'headless';
 
   let ok = 0;
@@ -231,7 +248,7 @@ async function cmdBrowseBatch() {
       const snapshot = await browse(url, { mode });
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       const outFile = join(outputDir, `batch-${ts}.yml`);
-      writeFileSync(outFile, snapshot);
+      writeFileSync(outFile, snapshot, { mode: 0o600 });
       ok++;
       process.stdout.write(`ok  ${url}\n    ${outFile}\n`);
     } catch (err) {
@@ -244,9 +261,11 @@ async function cmdBrowseBatch() {
 async function runDaemonInternal() {
   const { runDaemon } = await import('./src/daemon.js');
   const opts = {
+    engine: parseFlag('--engine'),
     mode: parseFlag('--mode') || 'headless',
     port: parseFlag('--port'),
     cookies: !hasFlag('--no-cookies'),
+    incognito: hasFlag('--incognito') || undefined,
     browser: parseFlag('--browser'),
     timeout: parseFlag('--timeout'),
     pruneMode: parseFlag('--prune-mode') || 'act',
@@ -254,6 +273,11 @@ async function runDaemonInternal() {
     proxy: parseFlag('--proxy'),
     viewport: parseFlag('--viewport'),
     storageState: parseFlag('--storage-state'),
+    downloadPath: parseFlag('--download-path'),
+    blockAds: hasFlag('--no-block-ads') ? false : undefined,
+    blockUrls: parseFlagAll('--block-urls'),
+    blockPrivateNetwork: hasFlag('--block-private-network') || undefined,
+    uploadDir: parseFlag('--upload-dir'),
   };
   const outputDir = parseFlag('--output-dir') || resolve('.swiftbrowse');
   const url = parseFlag('--url');
@@ -274,6 +298,20 @@ function parseFlag(name) {
 
 function hasFlag(name) {
   return args.includes(name);
+}
+
+// Collects every occurrence of a repeatable flag (--name=val or --name val).
+// Returns undefined when absent so the opts object stays sparse and callers
+// can distinguish "not provided" from "provided but empty".
+function parseFlagAll(name) {
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i].startsWith(name + '=')) out.push(args[i].slice(name.length + 1));
+    else if (args[i] === name && args[i + 1] && !args[i + 1].startsWith('--')) {
+      out.push(args[i + 1]); i++;
+    }
+  }
+  return out.length ? out : undefined;
 }
 
 
@@ -305,8 +343,33 @@ function install() {
       if (!config.mcpServers) config.mcpServers = {};
 
       if (config.mcpServers.swiftbrowse) {
-        console.log(`  ${target.name}: already configured`);
-        installed++;
+        // Detect a stale entry pointing at a different location/command —
+        // common when a contributor has both a global install (`npx`) and
+        // a worktree-local entry (`node /abs/path/mcp-server.js`). OAuth
+        // tokens are stored per endpoint, so leaving the stale one means
+        // auth from one path silently won't carry over to the other.
+        const existing = config.mcpServers.swiftbrowse;
+        const sameEndpoint =
+          existing.command === mcpEntry.command &&
+          JSON.stringify(existing.args || []) === JSON.stringify(mcpEntry.args);
+        if (!sameEndpoint) {
+          if (hasFlag('--force')) {
+            config.mcpServers.swiftbrowse = mcpEntry;
+            writeFileSync(target.path, JSON.stringify(config, null, 2) + '\n');
+            console.log(`  ${target.name}: REPLACED stale entry`);
+            console.log(`    was: ${existing.command} ${(existing.args || []).join(' ')}`);
+            console.log(`    now: ${mcpEntry.command} ${mcpEntry.args.join(' ')}`);
+            installed++;
+          } else {
+            console.log(`  ${target.name}: CONFLICT — different endpoint already registered`);
+            console.log(`    existing: ${existing.command} ${(existing.args || []).join(' ')}`);
+            console.log(`    new:      ${mcpEntry.command} ${mcpEntry.args.join(' ')}`);
+            console.log(`    Pass --force to overwrite, or edit ${target.path} by hand.`);
+          }
+        } else {
+          console.log(`  ${target.name}: already configured`);
+          installed++;
+        }
         continue;
       }
 
@@ -387,6 +450,142 @@ function readJsonOrEmpty(path) {
   }
 }
 
+/**
+ * Scan every known MCP config location for a `swiftbrowse` entry and print
+ * what's there. Built for the Claude Code "Conflicting scopes" warning,
+ * which is generated when the same MCP server name resolves to different
+ * absolute endpoints across scopes — OAuth tokens are stored per-endpoint
+ * so a split silently breaks auth.
+ */
+async function doctor() {
+  await doctorEnvironment();
+  doctorMcpConfig();
+}
+
+/**
+ * Report the runtime environment: which engine/mode a session would use, which
+ * browsers and cookie sources are actually installed, and whether a session is
+ * live in this directory. This is the "which engine am I on and what can it do?"
+ * answer — the gap that led a peer session to conclude Firefox wasn't supported
+ * when it is (selected via BAREBROWSE_ENGINE / --engine, not a per-tool flag).
+ */
+async function doctorEnvironment() {
+  const { findBrowser } = await import('./src/chromium.js');
+  const { findFirefox } = await import('./src/firefox.js');
+  const { findChromiumCookieDb, findFirefoxCookieDb } = await import('./src/auth.js');
+
+  console.log('swiftbrowse doctor — runtime environment:\n');
+  console.log(`  Node ${process.version} on ${platform()}`);
+
+  // Configured engine/mode/incognito. MCP selects the engine at server launch
+  // via these env vars (mcp-server.js), which a running session can't see —
+  // surfacing them here is the whole point.
+  const engine = process.env.BAREBROWSE_ENGINE === 'firefox' ? 'firefox' : 'chromium';
+  const modeEnv = process.env.BAREBROWSE_MODE;
+  const incognito = process.env.BAREBROWSE_INCOGNITO === '1';
+  console.log(`  Default engine: ${engine}  (override: BAREBROWSE_ENGINE=firefox | --engine firefox | connect({engine}))`);
+  // Mode default differs by surface: CLI `open` → headless, MCP → hybrid.
+  // BAREBROWSE_MODE overrides both, so report it directly when set.
+  console.log(`  Default mode:   ${modeEnv ? `${modeEnv}  (BAREBROWSE_MODE)` : 'headless (CLI open) / hybrid (MCP)'}`);
+  console.log(`  Incognito:      ${incognito ? 'on (BAREBROWSE_INCOGNITO=1) — no cookie injection' : 'off'}`);
+
+  // Installed browsers — both engines. A missing one explains why an --engine
+  // choice would fail before it launches.
+  console.log('\n  Installed browsers:');
+  let chromiumPath = null, firefoxPath = null;
+  try { chromiumPath = findBrowser(); } catch { /* none */ }
+  try { firefoxPath = findFirefox(); } catch { /* none */ }
+  console.log(`    Chromium/CDP:  ${chromiumPath || 'NOT FOUND — install chrome/chromium/brave/edge'}`);
+  console.log(`    Firefox/BiDi:  ${firefoxPath || 'NOT FOUND — install firefox (>= 121 for stable BiDi)'}`);
+
+  // Cookie sources — where authenticated sessions come from (skipped in incognito).
+  console.log('\n  Cookie sources:');
+  const chromiumCookies = findChromiumCookieDb();
+  const firefoxCookies = findFirefoxCookieDb();
+  console.log(`    Chromium:  ${chromiumCookies ? `${chromiumCookies.browser} (${chromiumCookies.path})` : 'none found'}`);
+  console.log(`    Firefox:   ${firefoxCookies || 'none found'}`);
+
+  // Live session in this directory, if any — reports its actual engine +
+  // capabilities (persisted into session.json by the daemon).
+  const { readSession, isAlive } = await import('./src/session-client.js');
+  const outputDir = resolve('.swiftbrowse');
+  const session = readSession(outputDir);
+  console.log('\n  Active session (this directory):');
+  if (!session) {
+    console.log('    none — run `swiftbrowse open [url]` to start one');
+  } else if (!(await isAlive(outputDir))) {
+    console.log(`    stale (pid ${session.pid} not responding) — run \`swiftbrowse close\` to clean up`);
+  } else {
+    console.log(`    running (pid ${session.pid}, port ${session.port}, engine ${session.engine || 'chromium'})`);
+    if (session.capabilities) {
+      const c = session.capabilities;
+      console.log(`      mode=${c.mode} attach=${c.attach} downloads=${c.downloads} stealth=${c.stealth} cookies=${c.cookieInjection} reloadIgnoreCache=${c.reloadIgnoreCache}`);
+    }
+  }
+  console.log('');
+}
+
+function doctorMcpConfig() {
+  const home = homedir();
+  const cwd = process.cwd();
+  const os = platform();
+
+  // (label, file path, key) — `key` is the top-level config key that holds
+  // the servers map. Claude Code / Desktop / Cursor use `mcpServers`; VS
+  // Code's .vscode/mcp.json uses `servers`.
+  const locations = [
+    ['Claude Code (user)',    join(home, '.claude.json'),      'mcpServers'],
+    ['Claude Code (project)', join(cwd, '.mcp.json'),          'mcpServers'],
+    ['Claude Code (local)',   join(cwd, '.claude.json'),       'mcpServers'],
+    ['VS Code (project)',     join(cwd, '.vscode', 'mcp.json'), 'servers'],
+    ['Cursor (user)',         join(home, '.cursor', 'mcp.json'), 'mcpServers'],
+  ];
+  // Claude Desktop varies by OS
+  if (os === 'darwin') {
+    locations.push(['Claude Desktop', join(home, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json'), 'mcpServers']);
+  } else if (os === 'linux') {
+    locations.push(['Claude Desktop', join(home, '.config', 'Claude', 'claude_desktop_config.json'), 'mcpServers']);
+  } else if (os === 'win32') {
+    locations.push(['Claude Desktop', join(home, 'AppData', 'Roaming', 'Claude', 'claude_desktop_config.json'), 'mcpServers']);
+  }
+
+  console.log('swiftbrowse doctor — scanning known MCP config locations:\n');
+  const findings = [];
+  for (const [label, path, key] of locations) {
+    if (!existsSync(path)) {
+      console.log(`  - ${label.padEnd(22)} ${path}  (not present)`);
+      continue;
+    }
+    const cfg = readJsonOrEmpty(path);
+    const entry = cfg[key]?.swiftbrowse;
+    if (!entry) {
+      console.log(`  - ${label.padEnd(22)} ${path}  (no swiftbrowse entry)`);
+      continue;
+    }
+    const sig = `${entry.command || '?'} ${(entry.args || []).join(' ')}`;
+    console.log(`  ✓ ${label.padEnd(22)} ${path}`);
+    console.log(`      endpoint: ${sig}`);
+    findings.push({ label, path, sig });
+  }
+
+  if (findings.length <= 1) {
+    console.log(`\n${findings.length} registration${findings.length === 1 ? '' : 's'} found. No scope conflict.`);
+  } else {
+    const unique = new Set(findings.map((f) => f.sig));
+    if (unique.size === 1) {
+      console.log(`\n${findings.length} registrations found, all pointing at the same endpoint. No conflict.`);
+    } else {
+      console.log(`\n⚠ CONFLICT: ${findings.length} registrations across ${unique.size} different endpoints.`);
+      console.log(`  Claude Code stores OAuth tokens per endpoint — authenticating in one scope`);
+      console.log(`  will not carry over to the other. Recommended fix: keep one, remove the rest.\n`);
+      console.log(`  Claude Code: claude mcp remove swiftbrowse -s user   (or -s project / -s local)`);
+      console.log(`  Other clients: edit the JSON file shown above and delete the swiftbrowse key.\n`);
+      console.log(`  Tip: run \`swiftbrowse mcp\` directly to see the startup banner —`);
+      console.log(`  the absolute serving path it prints to stderr is the one currently in use.`);
+    }
+  }
+}
+
 
 // --- Usage ---
 
@@ -399,9 +598,13 @@ Session:
   swiftbrowse status                 Check session status
 
   Open flags:
-    --mode=headless|headed|hybrid   Browser mode (default: headless)
+    --engine=chromium|firefox       Browser engine (default: chromium/CDP;
+                                    firefox drives over WebDriver BiDi)
+    --mode=headless|headed|hybrid   Browser mode (default: headless;
+                                    hybrid works on both engines)
     --port=N                        CDP port for headed mode
     --no-cookies                    Skip cookie injection
+    --incognito                     Clean, unauthenticated session (skip all auth injection)
     --browser=firefox|chromium      Cookie source browser
     --timeout=N                     Navigation timeout in ms
     --prune-mode=act|read           Default pruning mode
@@ -409,15 +612,24 @@ Session:
     --proxy=URL                     HTTP/SOCKS proxy server
     --viewport=WxH                  Viewport size (e.g. 1280x720)
     --storage-state=FILE            Load cookies/localStorage from JSON file
+    --download-path=DIR             Directory for downloaded files (default: per-session temp dir)
+    --no-block-ads                  Disable the built-in ad/tracker blocklist (~120 patterns).
+                                    Default: enabled in owned-browser modes, disabled in attach mode.
+    --block-urls=PATTERN            Extra URL glob to block (repeatable, e.g. --block-urls='*://*.foo.com/*').
+                                    Use the =VALUE form when the pattern could be mistaken for a flag.
+    --block-private-network         SSRF guard: refuse to navigate to loopback / RFC-1918 / link-local /
+                                    cloud-metadata hosts. Off by default so localhost browsing works.
+    --upload-dir=DIR                Sandbox uploads: reject files outside DIR (symlinks resolved).
+                                    Default: no restriction. (file:/chrome: schemes are always blocked.)
 
 Navigation:
   swiftbrowse goto <url>             Navigate to URL
   swiftbrowse back                   Go back in history
   swiftbrowse forward                Go forward in history
+  swiftbrowse reload [--no-cache]    Reload current page
   swiftbrowse snapshot [--mode=M]    ARIA snapshot -> .swiftbrowse/page-*.yml
-  swiftbrowse screenshot [opts]      Screenshot -> .swiftbrowse/screenshot-*.png
-    --format=png|jpeg|webp          Image format (default: png)
-    --selector=CSS                  Crop to matching element
+  swiftbrowse readable               Clean article text -> .swiftbrowse/article-*.txt
+  swiftbrowse screenshot [--format]  Screenshot -> .swiftbrowse/screenshot-*.png
   swiftbrowse pdf [--landscape]      PDF export -> .swiftbrowse/page-*.pdf
 
 Interaction:
@@ -436,13 +648,6 @@ Tabs:
   swiftbrowse tab <index>            Switch to tab by index
 
 Debugging:
-  swiftbrowse text [--max-chars=N]   Plain text from main content area
-  swiftbrowse extract <sel> [opts]   CSS selector → text (or attribute)
-    --all                           Return all matches (array) instead of first
-    --attr=NAME                     Read property/attribute instead of innerText
-  swiftbrowse links                  All hyperlinks → .swiftbrowse/links-*.json
-  swiftbrowse table [selector]       HTML table → .swiftbrowse/table-*.json
-
   swiftbrowse eval <expression>      Run JS in page context
   swiftbrowse wait-idle [--timeout]  Wait for network idle
   swiftbrowse wait-for [opts]        Wait for text/selector to appear
@@ -452,18 +657,18 @@ Debugging:
   swiftbrowse console-logs           Console logs -> .swiftbrowse/console-*.json
   swiftbrowse network-log            Network log -> .swiftbrowse/network-*.json
   swiftbrowse dialog-log             JS dialog log -> .swiftbrowse/dialogs-*.json
+  swiftbrowse downloads              List Content-Disposition downloads + savedPath (JSON)
   swiftbrowse save-state             Cookies + localStorage -> .swiftbrowse/state-*.json
-
-Batch:
-  swiftbrowse browse-batch [urls..]  Scrape multiple URLs, each → .swiftbrowse/batch-*.yml
-    --file=FILE                     Read URLs from a text file (one per line)
-    --mode=headless|headed          Browser mode (default: headless)
 
 One-shot:
   swiftbrowse browse <url> [mode]    Browse + print snapshot to stdout
 
 MCP:
   swiftbrowse mcp                    Start MCP server (JSON-RPC over stdio)
+  swiftbrowse install [--force]      Add swiftbrowse to detected MCP clients (--force replaces stale entries)
+  swiftbrowse install --skill        Install Claude Code skill file
+  swiftbrowse doctor                 Report engine/mode/browsers/cookie sources + active session,
+                                    then scan MCP config locations + flag scope conflicts
   swiftbrowse install                Auto-configure MCP for Claude Desktop / Cursor
   swiftbrowse install --skill        Install SKILL.md for Claude Code
 

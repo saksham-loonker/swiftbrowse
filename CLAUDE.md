@@ -13,12 +13,24 @@
 ## Project Specifics
 
 - **What:** Vanilla JS library — CDP-direct browsing for autonomous agents. URL in, pruned ARIA snapshot out.
-- **Language:** Vanilla JavaScript, ES modules, no build step
-- **Runtime:** Node.js >= 22 (built-in WebSocket, sqlite)
+- **Language:** Vanilla JavaScript, ES modules, no runtime build step (JSDoc→`.d.ts` types generated at publish only)
+- **Runtime:** Node.js >= 22 (built-in `node:sqlite` for reading cookie DBs)
 - **Protocol:** CDP (Chrome DevTools Protocol) direct — no Playwright
 - **Browser:** Any installed Chromium-based browser (chromium, chrome, brave, edge)
-- **Modules:** 11 files in `src/`, ~2,400 lines, zero required deps
-- **Tests:** 54 passing — run with `node --test test/unit/*.test.js test/integration/*.test.js`
+- **Modules:** ~16 files in `src/`. Two runtime deps: `ws` (CDP transport — Node's built-in WebSocket caps messages ~3MB and tears down the socket) and `@mozilla/readability` (`readable()` article extraction). Both vetted/lightweight per the dependency rule.
+- **Tests:** 160+ passing — run with `node --test test/unit/*.test.js test/integration/*.test.js`
 - **Docs:** `docs/README.md` (navigation guide to all documentation)
 
-For full development and testing standards, see `.claude/memory/AGENT_RULES.md`.
+<!-- MEMORY:START -->
+@.claude/remember/MEMORY.md
+<!-- MEMORY:END -->
+
+<!-- AGENT_RULES:START -->
+Standards guide (read when designing/building something new, not hot context):
+.claude/remember/AGENT_RULES.md
+<!-- AGENT_RULES:END -->
+
+<!-- DOCS_INDEX:START -->
+Docs map: `docs/index.md` — every doc in this project, with line counts.
+Search this corpus instead of reading it whole: `/docs-builder search <query words>`
+<!-- DOCS_INDEX:END -->

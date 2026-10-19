@@ -9,857 +9,70 @@
   swiftbrowse
 ```
 
-[![MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Node](https://img.shields.io/badge/node-%3E%3D22-green)](package.json)
+<p align="center">
+  <a href="https://github.com/saksham-loonker/swiftbrowse/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/saksham-loonker/swiftbrowse/ci.yml?label=CI" alt="CI"></a>
+  <img src="https://img.shields.io/github/package-json/v/saksham-loonker/swiftbrowse?label=version&color=2a4f8c" alt="version (auto from package.json)">
+  <img src="https://img.shields.io/badge/license-Apache%202.0-2a4f8c" alt="license: Apache 2.0">
+</p>
 
-**CDP-direct web browsing for autonomous agents and web scrapers. Zero dependencies.**
-
-URL in, pruned ARIA snapshot out. Same browser, same logins, same cookies. 40-90% fewer tokens than raw HTML output.
-
----
-
-## What it is
-
-swiftbrowse gives your AI agent a real browser without the cruft. Navigate, read, interact, move on — using the browser you already have and the logins you already have. Pages come back pruned to what matters: interactive elements, readable text, no structural noise.
-
-- **No Playwright, no Puppeteer.** Direct Chrome DevTools Protocol (CDP) — lightweight, low-overhead.
-- **Zero required dependencies.** Vanilla JavaScript, standard library only.
-- **Real browser, real cookies.** Extracts login sessions from your Firefox or Chromium, injects them via CDP. Public pages work without auth.
-- **Works standalone.** Use as a library, CLI tool, or MCP server for Claude Desktop / Cursor.
-- **Automatic headless fallback.** Bot-detected by Cloudflare? Switches to headed mode on the fly.
-- **Prunes ruthlessly.** 40-90% token reduction. Strips decorative wrappers, hidden elements, structural junk. Two modes: **act** (interactive elements only) and **read** (full text).
+> Your agent browses like you do -- same browser, same logins, same cookies.
+> Prunes pages down to what matters. 40-90% fewer tokens, zero wasted context.
 
 ---
+
+## What this is
+
+swiftbrowse gives your AI agent a real browser. Navigate, read, interact, move on.
+
+It uses the browser you already have -- your sessions, your cookies. Pages come back stripped to what matters -- 40-90% fewer tokens than raw output.
+
+No Playwright. No bundled browser. No 200MB download. Two tiny dependencies (`ws` + Mozilla Readability).
 
 ## Install
 
-### From source
+```
+npm install swiftbrowse
+```
+
+Requires Node.js >= 22 and any installed Chromium-based browser.
+
+Ships with TypeScript types (generated from JSDoc) — autocomplete and type-checking work out of the box, no `@types/swiftbrowse` needed. The library is vanilla JS with no build step.
+
+## Three ways to use it
+
+### 1. CLI session -- for coding agents and quick testing
 
 ```bash
-git clone https://github.com/saksham-loonker/swiftbrowse.git
-cd swiftbrowse
-npm install
+swiftbrowse open https://example.com    # Start session + navigate
+swiftbrowse snapshot                    # ARIA snapshot → .swiftbrowse/page-*.yml
+swiftbrowse readable                    # Clean article text → .swiftbrowse/article-*.txt
+swiftbrowse click 8                     # Click element
+swiftbrowse close                       # End session
 ```
 
-**Requirements:**
-- Node.js >= 22
-- Any installed Chromium-based browser (Chrome, Chromium, Brave, Edge, Vivaldi)
+Outputs go to `.swiftbrowse/` as files -- agents read them with their file tools, no token waste in tool responses. Output files older than 7 days are auto-removed at session start; saved state files (`state-*.json`) are kept.
 
-### Global CLI
+**Teach your agent the commands** by installing the skill file (a markdown reference the agent reads as context). The CLI tool itself still needs `npm install swiftbrowse` -- the skill just teaches the agent how to use it.
 
-```bash
-# Make it globally available
-npm install -g .
+**Claude Code:** Copy `commands/swiftbrowse/SKILL.md` to `.claude/skills/swiftbrowse/SKILL.md` (project) or run `swiftbrowse install --skill` (global).
 
-# Or use directly from the repo
-./cli.js browse https://example.com
-```
+**Other agents:** Copy `commands/swiftbrowse.md` to your agent's command/skill directory.
 
----
+For writing your own skill files for other CLI tools: [docs/product/skill-template.md](docs/product/skill-template.md).
 
-## Quick Start
+### 2. MCP server -- for Claude Desktop, Cursor, and other MCP clients
 
-### 1. One-Shot: Browse a URL
-
-Single isolated read — launches its own browser, no session state.
-
-```javascript
-import { browse } from 'swiftbrowse';
-
-const snapshot = await browse('https://example.com');
-console.log(snapshot);
-// # https://example.com
-// # 2,847 chars → 340 chars (88% pruned)
-// - button "Get Started" [ref=0]
-// - link "Docs" [ref=1]
-// - textbox "Search" [ref=2]
-```
-
-### 2. Long Session: Connect & Interact
-
-Preserve cookies, login state, and storage across multiple actions.
-
-```javascript
-import { connect } from 'swiftbrowse';
-
-const page = await connect({ mode: 'headless' });
-
-// Navigate and interact
-await page.goto('https://github.com/login');
-await page.type(0, 'user@example.com');
-await page.type(1, 'password');
-await page.click(2);
-await page.waitForNavigation();
-
-// Extract data
-const snapshot = await page.snapshot();
-const links = await page.links();
-const table = await page.table('table.data');
-
-await page.close();
-```
-
-### 3. Agent Tools: Ready-Made Adapter
-
-Integrate with your LLM orchestration loop. Includes automatic snapshot refresh after every action.
-
-```javascript
-import { createBrowseTools } from 'swiftbrowse/swiftagent';
-
-const { tools, close } = createBrowseTools({ mode: 'hybrid' });
-
-// Pass to your agent loop (Anthropic, OpenAI, LangChain, etc.)
-// tools[0] = { name: 'browse', description: '...', parameters: {...}, execute: ... }
-// tools[1] = { name: 'goto', ... }
-// ... 24 tools total
-
-for (const tool of tools) {
-  // Your agent can now call tool.execute({ url: '...' })
-}
-
-await close();
-```
-
----
-
-## CLI Reference
-
-### Session Commands
-
-```bash
-swiftbrowse open [url] [flags]    Open browser session (daemon mode)
-swiftbrowse close                  Close session
-swiftbrowse status                 Check session status
-```
-
-Open flags:
-
-| Flag | Values | Default | Description |
-|------|--------|---------|-------------|
-| `--mode` | `headless`, `headed`, `hybrid` | `headless` | Browser mode |
-| `--port` | number | `9222` | CDP port for headed mode |
-| `--no-cookies` | boolean | false (cookies enabled) | Skip cookie injection |
-| `--browser` | `firefox`, `chromium` | auto-detect | Cookie source browser |
-| `--timeout` | ms | `30000` | Navigation timeout |
-| `--prune-mode` | `act`, `read` | `act` | Default snapshot pruning |
-| `--no-consent` | boolean | false (consent auto-dismissed) | Skip consent dismissal |
-| `--proxy` | URL | none | HTTP/SOCKS proxy server |
-| `--viewport` | WxH | `1280x800` | Viewport size |
-| `--storage-state` | filepath | none | Load cookies/localStorage from JSON |
-
-Example:
-```bash
-swiftbrowse open https://example.com --mode=hybrid --viewport=1920x1080
-swiftbrowse snapshot
-swiftbrowse click 5
-swiftbrowse close
-```
-
-### Navigation
-
-```bash
-swiftbrowse goto <url>              Navigate to URL in current session
-swiftbrowse back                    Go back in history
-swiftbrowse forward                 Go forward in history
-```
-
-### Snapshots & Exports
-
-```bash
-swiftbrowse snapshot [--mode=M]     ARIA snapshot → .swiftbrowse/page-*.yml
-swiftbrowse screenshot [--format] [--selector]
-  --format=png|jpeg|webp            Image format (default: png)
-  --selector=CSS                    Crop to matching element
-swiftbrowse pdf [--landscape]       PDF export → .swiftbrowse/page-*.pdf
-```
-
-### Interaction
-
-```bash
-swiftbrowse click <ref>             Click element by ref
-swiftbrowse type <ref> <text>       Type text (--clear to replace)
-swiftbrowse fill <ref> <text>       Clear + type (shorthand)
-swiftbrowse press <key>             Press special key
-swiftbrowse scroll <deltaY>         Scroll (positive=down, e.g. 400)
-swiftbrowse hover <ref>             Hover element (reveal tooltips)
-swiftbrowse select <ref> <value>    Select dropdown value
-swiftbrowse drag <from> <to>        Drag element to another
-swiftbrowse upload <ref> <file..>   Upload files to file input
-```
-
-Keys: `Enter`, `Tab`, `Escape`, `Backspace`, `Delete`, `ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`, `Home`, `End`, `PageUp`, `PageDown`, `Space`
-
-### Tabs
-
-```bash
-swiftbrowse tabs                    List open tabs (index, url, title)
-swiftbrowse tab <index>             Switch to tab by index
-```
-
-### Scraping & Debugging
-
-```bash
-swiftbrowse text [--max-chars=N]    Plain text from main content area
-swiftbrowse extract <selector> [--all] [--attr=NAME]
-  --all                             Return all matches as array
-  --attr=NAME                       Read property/attribute instead of text
-swiftbrowse links                   All hyperlinks → .swiftbrowse/links-*.json
-swiftbrowse table [selector]        HTML table → .swiftbrowse/table-*.json
-swiftbrowse eval <expression>       Run JS in page context (raw CDP)
-swiftbrowse wait-idle [--timeout]   Wait for network idle
-swiftbrowse wait-for [--text] [--selector] [--timeout]
-swiftbrowse console-logs            Console logs → .swiftbrowse/console-*.json
-swiftbrowse network-log [--failed]  Network log → .swiftbrowse/network-*.json
-swiftbrowse dialog-log              JS dialog log → .swiftbrowse/dialogs-*.json
-swiftbrowse save-state              Cookies + localStorage → .swiftbrowse/state-*.json
-```
-
-### Batch & One-Shot
-
-```bash
-swiftbrowse browse-batch <urls..>   Scrape multiple URLs
-  --file=FILE                       Read URLs from text file (one per line)
-  --mode=headless|headed            Browser mode (default: headless)
-
-swiftbrowse browse <url> [mode]     One-shot read (print snapshot to stdout)
-```
-
-### MCP Server
-
-```bash
-swiftbrowse mcp                     Start MCP server (JSON-RPC over stdio)
-swiftbrowse install                 Auto-configure for Claude Desktop / Cursor
-swiftbrowse install --skill         Install SKILL.md for Claude Code
-```
-
----
-
-## Library API
-
-### browse(url, opts)
-
-One-shot isolated read: launch browser, navigate, get snapshot, close.
-
-```typescript
-async function browse(url: string, opts?: {
-  mode?: 'headless' | 'headed' | 'hybrid';    // default: 'headless'
-  cookies?: boolean;                          // default: true
-  consent?: boolean;                          // default: true (auto-dismiss)
-  prune?: boolean;                            // default: true
-  pruneMode?: 'act' | 'read';                 // default: 'act'
-  timeout?: number;                           // ms, default: 30000
-  browser?: string;                           // 'firefox' | 'chromium'
-  proxy?: string;                             // HTTP/SOCKS proxy URL
-  viewport?: string;                          // e.g. "1280x720"
-  port?: number;                              // CDP port for headed mode
-}): Promise<string>
-```
-
-Returns ARIA snapshot (YAML-style tree with `[ref=N]` markers):
-
-```
-# https://example.com
-# 2,847 chars → 340 chars (88% pruned)
-- button "Get Started" [ref=0]
-- link "Docs" [ref=1]
-- textbox "Search" [ref=2]
-  - text "Type to search..."
-```
-
-**Example:**
-
-```javascript
-const snapshot = await browse('https://github.com', {
-  mode: 'hybrid',        // Try headless, fallback to headed if bot-detected
-  viewport: '1280x720',
-  prune: true,
-  pruneMode: 'act'       // Interactive elements only
-});
-```
-
----
-
-### connect(opts)
-
-Long-lived session: connect to browser, navigate multiple times, interact across pages, preserve cookies/storage.
-
-```typescript
-async function connect(opts?: {
-  mode?: 'headless' | 'headed' | 'hybrid';    // default: 'headless'
-  port?: number;                              // CDP port for headed mode
-  cookies?: boolean;                          // injected on goto()
-  consent?: boolean;                          // auto-dismissed on goto()
-  browser?: string;                           // 'firefox' | 'chromium'
-  proxy?: string;                             // HTTP/SOCKS proxy URL
-  viewport?: string;                          // e.g. "1280x720"
-  storageState?: string;                      // path to state JSON
-}): Promise<PageHandle>
-```
-
-Returns page handle with the following methods:
-
-#### goto(url, timeout?)
-
-Navigate to URL, wait for load, auto-dismiss consent, return snapshot.
-
-```javascript
-await page.goto('https://example.com', 30000);
-```
-
-#### goBack()
-
-Go back in history. Throws if no previous page.
-
-```javascript
-await page.goBack();
-```
-
-#### goForward()
-
-Go forward in history. Throws if no next page.
-
-```javascript
-await page.goForward();
-```
-
-#### snapshot(pruneOpts?)
-
-Get current page as ARIA snapshot. Refresh after `waitFor` or manual navigation.
-
-```javascript
-// Pruned (default: act mode)
-const snapshot = await page.snapshot();
-
-// Raw unpruned
-const raw = await page.snapshot(false);
-
-// Custom prune mode
-const text = await page.snapshot({ mode: 'read' });
-```
-
-#### click(ref)
-
-Click element by ref from snapshot. Scrolls into view, triggers DOM updates/navigation.
-
-```javascript
-await page.click('0');  // ref from [ref=0]
-```
-
-#### type(ref, text, opts?)
-
-Type text into input/textarea/contenteditable.
-
-```javascript
-await page.type('2', 'search query');
-await page.type('3', 'new value', { clear: true });  // Replace existing
-```
-
-#### press(key)
-
-Press special key.
-
-```javascript
-await page.press('Enter');
-await page.press('Escape');
-await page.press('Tab');
-```
-
-#### scroll(deltaY)
-
-Scroll page vertically.
-
-```javascript
-await page.scroll(400);   // Down 400px
-await page.scroll(-200);  // Up 200px
-```
-
-#### hover(ref)
-
-Hover mouse over element (reveals tooltips, dropdown menus).
-
-```javascript
-await page.hover('1');
-```
-
-#### select(ref, value)
-
-Select value in dropdown or ARIA combobox.
-
-```javascript
-await page.select('4', 'Option Label');
-```
-
-#### drag(fromRef, toRef)
-
-Drag element and drop on another (Kanban boards, sliders, reordering).
-
-```javascript
-await page.drag('0', '1');
-```
-
-#### upload(ref, files)
-
-Set files on file input element.
-
-```javascript
-await page.upload('5', ['/home/user/document.pdf', '/home/user/image.jpg']);
-```
-
-#### text(opts?)
-
-Extract all readable text from page. Prefers `<main>`, `[role="main"]`, or `<article>` to exclude nav/header/footer automatically.
-
-```javascript
-const text = await page.text();
-const truncated = await page.text({ maxChars: 5000 });
-```
-
-#### extract(selector, opts?)
-
-Extract text or attribute from elements matching CSS selector.
-
-```javascript
-// First match, text content
-const title = await page.extract('h1');
-
-// All matches, as array
-const prices = await page.extract('.price', { all: true });
-
-// Attribute value
-const href = await page.extract('a.primary', { attr: 'href' });
-const ids = await page.extract('[data-id]', { all: true, attr: 'data-id' });
-```
-
-#### links()
-
-Extract all hyperlinks from page.
-
-```javascript
-const allLinks = await page.links();
-// [
-//   { href: 'https://example.com/docs', text: 'Documentation' },
-//   { href: 'https://example.com/blog', text: 'Blog' }
-// ]
-```
-
-#### table(selector?)
-
-Extract HTML table as structured JSON.
-
-```javascript
-const data = await page.table();  // First table
-const specific = await page.table('table.pricing');
-// {
-//   headers: ['Product', 'Price', 'Stock'],
-//   rows: [
-//     ['Widget A', '$10', 'In Stock'],
-//     ['Widget B', '$20', 'Out of Stock']
-//   ]
-// }
-```
-
-#### screenshot(opts?)
-
-Capture page as base64 PNG/JPEG/WebP.
-
-```javascript
-const fullPage = await page.screenshot();
-const cropped = await page.screenshot({ selector: '.modal' });
-const jpeg = await page.screenshot({ format: 'jpeg', quality: 85 });
-
-// Write to file
-const fs = require('fs');
-fs.writeFileSync('page.png', Buffer.from(fullPage, 'base64'));
-```
-
-#### pdf(opts?)
-
-Export page as base64 PDF.
-
-```javascript
-const pdf = await page.pdf();
-const landscape = await page.pdf({ landscape: true });
-
-// Write to file
-fs.writeFileSync('page.pdf', Buffer.from(pdf, 'base64'));
-```
-
-#### tabs()
-
-List all open browser tabs.
-
-```javascript
-const allTabs = await page.tabs();
-// [
-//   { index: 0, url: 'https://example.com', title: 'Example' },
-//   { index: 1, url: 'https://github.com', title: 'GitHub' }
-// ]
-```
-
-#### switchTab(index)
-
-Switch to tab by index from `tabs()`.
-
-```javascript
-await page.switchTab(1);
-```
-
-#### waitFor(opts?)
-
-Poll until text or CSS selector appears on page. Resolves when condition is met.
-
-```javascript
-await page.waitFor({ text: 'Loading complete', timeout: 10000 });
-await page.waitFor({ selector: '.results-loaded', timeout: 5000 });
-```
-
-#### waitForNavigation(timeout?)
-
-SPA-aware: wait for page load event OR frame navigation. Works for full-page loads and `pushState` navigation.
-
-```javascript
-await page.waitForNavigation(30000);
-```
-
-#### waitForNetworkIdle(opts?)
-
-Wait until no pending network requests for `idle` ms.
-
-```javascript
-await page.waitForNetworkIdle({ timeout: 30000, idle: 500 });
-```
-
-#### injectCookies(url, opts?)
-
-Extract cookies from your browser and inject into CDP session.
-
-```javascript
-await page.injectCookies('https://example.com', { browser: 'firefox' });
-```
-
-#### saveState(filePath)
-
-Export cookies and localStorage to JSON file (restore with `storageState` option).
-
-```javascript
-await page.saveState('.swiftbrowse/session.json');
-
-// Later: reuse state in new session
-const page2 = await connect({ storageState: '.swiftbrowse/session.json' });
-```
-
-#### dialogLog
-
-Array of auto-dismissed JS dialogs (alert, confirm, prompt).
-
-```javascript
-console.log(page.dialogLog);
-// [
-//   { type: 'alert', message: 'Error!', timestamp: '2025-03-01T...' },
-//   { type: 'prompt', message: 'Enter name:', timestamp: '2025-03-01T...' }
-// ]
-```
-
-#### cdp (escape hatch)
-
-Raw CDP session for any Chrome DevTools Protocol command.
-
-```javascript
-// Run arbitrary JS in page context
-const { result } = await page.cdp.send('Runtime.evaluate', {
-  expression: 'navigator.userAgent',
-  returnByValue: true
-});
-console.log(result.value);
-
-// Custom metrics
-const metrics = await page.cdp.send('Performance.getMetrics');
-```
-
-#### close()
-
-Close browser and clean up.
-
-```javascript
-await page.close();
-```
-
----
-
-## Agent Tools (24 tools)
-
-When using `createBrowseTools()`, you get 24 ready-to-use tools with LLM-compatible signatures. Each action tool automatically settles the page (waits for navigation OR network idle) and returns a fresh snapshot.
-
-### createBrowseTools(opts?)
-
-```javascript
-import { createBrowseTools } from 'swiftbrowse/swiftagent';
-
-const { tools, close } = createBrowseTools({
-  mode: 'hybrid',              // Fallback to headed if headless blocked
-  cookies: true,               // Inject user cookies on goto()
-  consent: true,               // Auto-dismiss cookie banners
-  browser: 'firefox',          // Cookie source
-  viewport: '1280x720',        // Default viewport
-  storageState: './auth.json', // Pre-load session
-  snapshotAfterAction: true    // Return snapshot after actions (default)
-});
-
-// tools is an array of { name, description, parameters, execute }
-// Pass to your agent loop (Anthropic, OpenAI, LangChain, etc.)
-
-await close();  // Cleanup when done
-```
-
-#### Navigation Tools
-
-| Tool | Parameters | Returns | Description |
-|------|-----------|---------|-------------|
-| `browse` | `{ url }` | ARIA snapshot | One-shot read: launch isolated browser, navigate, get snapshot, close. No session state. |
-| `goto` | `{ url }` | ARIA snapshot | Navigate in current session. Preserves cookies, storage, login state. Waits for load. |
-| `back` | none | ARIA snapshot | Go back in history. Throws if no previous page. |
-| `forward` | none | ARIA snapshot | Go forward in history. Throws if no next page. |
-
-#### Observation Tools
-
-| Tool | Parameters | Returns | Description |
-|------|-----------|---------|-------------|
-| `snapshot` | none | ARIA snapshot | Pruned tree with `[ref=N]` markers. Call after waitFor to refresh stale refs. |
-| `find` | `{ text, role? }` | `{ ref, line }` or `{ ref: null, message }` | Find element by visible text/label. Optionally narrow by ARIA role. Use instead of snapshot scanning. |
-| `screenshot` | `{ format?, selector? }` | base64 string | Page/element screenshot. PNG/JPEG/WebP. Use when ARIA cannot express visual context. |
-| `pdf` | `{ landscape? }` | base64 string | Export page as PDF. |
-
-#### Interaction Tools
-
-| Tool | Parameters | Returns | Description |
-|------|-----------|---------|-------------|
-| `click` | `{ ref }` | ARIA snapshot | Click element. Scrolls into view, triggers actions/navigation. |
-| `type` | `{ ref, text, clear? }` | ARIA snapshot | Type text into input. Set `clear=true` to replace. |
-| `press` | `{ key }` | ARIA snapshot | Press special key (Enter, Tab, Escape, arrows, etc.). |
-| `hover` | `{ ref }` | ARIA snapshot | Hover element (reveals tooltips, menus). |
-| `select` | `{ ref, value }` | ARIA snapshot | Select dropdown value by text or option value. |
-| `scroll` | `{ deltaY }` | ARIA snapshot | Scroll page (positive=down). Typical: 400. |
-| `drag` | `{ fromRef, toRef }` | ARIA snapshot | Drag and drop. For Kanban, sliders, reordering. |
-| `upload` | `{ ref, files }` | ARIA snapshot | Upload files to file input. Paths: absolute. |
-
-#### Waiting Tools
-
-| Tool | Parameters | Returns | Description |
-|------|-----------|---------|-------------|
-| `waitFor` | `{ text?, selector?, timeout? }` | ARIA snapshot | Poll until text or CSS selector appears. More reliable than fixed delays. |
-
-#### Tabs
-
-| Tool | Parameters | Returns | Description |
-|------|-----------|---------|-------------|
-| `tabs` | none | array of `{ index, url, title }` | List open tabs. Use with `switchTab`. |
-| `switchTab` | `{ index }` | ARIA snapshot | Switch to tab by index. |
-
-#### Scraping Tools
-
-| Tool | Parameters | Returns | Description |
-|------|-----------|---------|-------------|
-| `extract` | `{ selector, all?, attr? }` | string or array | Extract text/attribute from CSS selector. `all=true` for all matches. `attr=` for properties/attributes. |
-| `links` | none | array of `{ href, text }` | All hyperlinks (excludes javascript: and data:). |
-| `table` | `{ selector? }` | `{ headers, rows }` or null | HTML table as JSON. Default: first table. |
-| `text` | `{ maxChars? }` | string | Plain text from main content area (automatically excludes nav/header/footer). |
-
----
-
-## Scraping Examples
-
-### Extract Prices from E-Commerce Site
-
-```javascript
-import { connect } from 'swiftbrowse';
-
-const page = await connect();
-await page.goto('https://example.com/products');
-
-const prices = await page.extract('.product-price', { all: true });
-// ['$19.99', '$29.99', '$39.99']
-
-const names = await page.extract('.product-name', { all: true });
-// ['Widget A', 'Widget B', 'Widget C']
-
-await page.close();
-```
-
-### Scrape an HTML Table
-
-```javascript
-import { connect } from 'swiftbrowse';
-
-const page = await connect();
-await page.goto('https://example.com/pricing');
-
-const table = await page.table('table.comparison');
-// {
-//   headers: ['Plan', 'Price', 'Users', 'Support'],
-//   rows: [
-//     ['Starter', '$29/mo', '1', 'Email'],
-//     ['Pro', '$99/mo', '5', 'Priority'],
-//     ['Enterprise', 'Custom', 'Unlimited', '24/7']
-//   ]
-// }
-
-await page.close();
-```
-
-### Get All Links from a Page
-
-```javascript
-import { connect } from 'swiftbrowse';
-
-const page = await connect();
-await page.goto('https://example.com');
-
-const links = await page.links();
-// [
-//   { href: 'https://example.com/about', text: 'About Us' },
-//   { href: 'https://example.com/contact', text: 'Contact' },
-//   { href: 'https://example.com/blog', text: 'Blog' }
-// ]
-
-// Filter for external links
-const external = links.filter(l => !l.href.includes('example.com'));
-
-await page.close();
-```
-
-### Batch Crawl Multiple URLs
-
-```javascript
-import { browse } from 'swiftbrowse';
-import { writeFileSync } from 'node:fs';
-
-const urls = [
-  'https://example.com/page1',
-  'https://example.com/page2',
-  'https://example.com/page3'
-];
-
-for (const url of urls) {
-  try {
-    const snapshot = await browse(url, { mode: 'hybrid' });
-    writeFileSync(`output/${url.split('/').pop()}.yml`, snapshot);
-    console.log(`OK: ${url}`);
-  } catch (err) {
-    console.error(`FAIL: ${url}: ${err.message}`);
-  }
-}
-```
-
-Or use CLI:
-
-```bash
-swiftbrowse browse-batch \
-  https://example.com/page1 \
-  https://example.com/page2 \
-  https://example.com/page3 \
-  --mode=hybrid
-```
-
-### Screenshot a Specific Element
-
-```javascript
-import { connect } from 'swiftbrowse';
-import { writeFileSync } from 'node:fs';
-
-const page = await connect();
-await page.goto('https://example.com');
-
-// Screenshot the hero section
-const screenshot = await page.screenshot({ selector: '.hero' });
-writeFileSync('hero.png', Buffer.from(screenshot, 'base64'));
-
-await page.close();
-```
-
-### Fill and Submit a Form
-
-```javascript
-import { connect } from 'swiftbrowse';
-
-const page = await connect();
-await page.goto('https://example.com/contact');
-
-const snapshot = await page.snapshot();
-// - textbox "Name" [ref=0]
-// - textbox "Email" [ref=1]
-// - textarea "Message" [ref=2]
-// - button "Submit" [ref=3]
-
-await page.type('0', 'John Doe');
-await page.type('1', 'john@example.com');
-await page.type('2', 'Hello, I have a question...');
-await page.click('3');
-
-await page.waitForNavigation();
-const result = await page.snapshot();
-console.log(result);
-
-await page.close();
-```
-
----
-
-## Browser Modes
-
-| Mode | Behavior | Best For |
-|------|----------|----------|
-| **headless** (default) | Launches fresh Chromium, no UI. Fast, lightweight, scriptable. | Automation, scraping, reading pages, batch jobs. |
-| **headed** | Connects to your running browser on CDP port 9222. Visible interaction, visual debugging. | Bot-detected sites, CAPTCHAs, visual inspection, debugging. |
-| **hybrid** | Tries headless first. If bot-detected (Cloudflare, etc.), falls back to headed. | General-purpose agent browsing. Best of both. |
-
-**Start a headed browser (macOS/Linux/Windows):**
-
-```bash
-# Chrome
-google-chrome --remote-debugging-port=9222 &
-# or Chromium
-chromium --remote-debugging-port=9222 &
-# or Brave
-brave --remote-debugging-port=9222 &
-
-# Then use headed mode
-swiftbrowse open https://example.com --mode=headed
-```
-
----
-
-## Automatic Features
-
-- **Cookie injection:** Extracts login sessions from Firefox/Chromium, injects via CDP. Public pages work without auth.
-- **Consent dismissal:** Detects and dismisses 29-language cookie consent dialogs automatically.
-- **Bot detection fallback:** Recognizes Cloudflare challenges, switches to headed mode on the fly (hybrid mode).
-- **Permission suppression:** Blocks all browser permission prompts (geolocation, notifications, camera, etc.).
-- **Stealth patches:** Headless-mode-only patches to evade bot detection (navigator checks, etc.).
-- **SPA navigation:** Works with `pushState`/`replaceState` navigation (React, Vue, Angular, etc.).
-- **Dialog handling:** Auto-dismisses JS alerts, confirms, prompts.
-- **Network monitoring:** Track network requests, wait for idle.
-
----
-
-## MCP Server
-
-swiftbrowse runs as an MCP (Model Context Protocol) server for Claude Desktop, Cursor, and other MCP clients.
-
-### Claude Code
-
+**Claude Code:**
 ```bash
 claude mcp add swiftbrowse -- npx swiftbrowse mcp
 ```
 
-### Claude Desktop / Cursor
-
+**Claude Desktop / Cursor:**
 ```bash
 npx swiftbrowse install
 ```
 
-Or manually add to config:
-
-**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, or equivalent on Windows/Linux):
-
+Or manually add to your config (`claude_desktop_config.json`, `.cursor/mcp.json`):
 ```json
 {
   "mcpServers": {
@@ -871,8 +84,7 @@ Or manually add to config:
 }
 ```
 
-**Cursor** (`.cursor/mcp.json`):
-
+**VS Code (`.vscode/mcp.json`):**
 ```json
 {
   "servers": {
@@ -884,183 +96,203 @@ Or manually add to config:
 }
 ```
 
-MCP exposes 12 essential tools:
-- **Navigation:** `browse`, `goto`, `back`, `forward`
-- **Observation:** `snapshot`, `screenshot`, `pdf`
-- **Interaction:** `click`, `type`, `press`, `scroll`, `hover`, `select`, `drag`, `upload`
-- **Tab management:** `tabs`, `switchTab`
-- **Scraping:** `extract`, `links`, `table`, `text`
-- **Waiting:** `waitFor`, `waitForNavigation`, `waitForNetworkIdle`
+MCP tools: `browse`, `goto`, `snapshot`, `readable`, `click`, `type`, `press`, `scroll`, `hover`, `select`, `back`, `forward`, `reload`, `drag`, `upload`, `pdf`, `screenshot`, `wait_for`, `tabs`, `capabilities` (reports the active engine — chromium or firefox — and what the session can do; no side effects). Plus `assess` (privacy scan) if [wearehere](https://github.com/hamr0/wearehere) is installed. Plus opt-in `eval` (`BAREBROWSE_MCP_EVAL=1`) — runs JS in the authenticated session, off by default because it can read cookies/localStorage. Session runs in hybrid mode with automatic cookie injection. Per-tool timeouts (goto/reload/wait_for 60s, back/forward 30s, interactive ops 15s, pdf/screenshot/upload 45s) with auto-retry on transient failures (idempotent only — mutating tools fail loudly to avoid double-submits).
 
-Session runs in hybrid mode with automatic cookie injection.
+**Idle release.** An MCP server can outlive its conversation, so it closes its browser after `BAREBROWSE_IDLE_MINUTES` (default `15`, `0` = never, blank/invalid = default, fractional allowed, capped at ~24.8 days) with no tool call in flight. The next call opens a fresh browser (a new job, not a resume — a page left open, e.g. a solved captcha in the headed window, is gone). A transient browser error also closes the broken browser rather than orphaning it; an ordinary `wait_for` timeout does not reset the page.
 
----
+`browse` and `snapshot` accept `pruneMode: 'act'|'read'`. `act` (default) keeps interactive elements — best for clicking/filling. `read` keeps paragraphs, headings, and long text — best for articles, docs, and content extraction. If act-mode collapses a content-heavy page near-totally, the snapshot includes a `hint: …` line suggesting `pruneMode='read'` so the agent doesn't bail to a separate HTTP fetch.
 
-## Pruning
+`npx swiftbrowse doctor` reports the runtime environment first — default engine/mode, installed Chromium/Firefox binaries, cookie sources, and any live session's engine + capabilities — then scans every known MCP config location and flags scope conflicts. `npx swiftbrowse install --force` overwrites an existing entry pointing at a different endpoint.
 
-The pruning pipeline reduces ARIA output 40-90% while preserving what matters:
+### 3. Library -- for agentic automation
+
+Import swiftbrowse in your agent code. One-shot reads, interactive sessions, full observe-think-act loops. Works with any LLM orchestration library. Ships with a ready-made adapter for [bareagent](https://www.npmjs.com/package/bare-agent) (auto-snapshot after every action).
+
+For code examples, API reference, and wiring instructions, see **[swiftbrowse.context.md](swiftbrowse.context.md)** -- the full integration guide.
+
+## Three modes
+
+| Mode | What happens | Best for |
+|------|-------------|----------|
+| **Headless** (default) | Launches a fresh browser, no UI | Fast automation, scraping, reading pages |
+| **Headed** | Auto-launches a visible browser window | Bot-detected sites, visual debugging, CAPTCHAs |
+| **Hybrid** | Tries headless first, auto-launches headed if blocked | General-purpose agent browsing |
+
+All three work on both engines (Chromium/CDP and Firefox/BiDi).
+
+### Attach to your already-running browser
+
+Start Chromium yourself with a debug port, then drive your real logged-in session:
+
+```bash
+chromium --remote-debugging-port=9222
+```
+
+```js
+import { connect } from 'swiftbrowse';
+const page = await connect({ port: 9222 });
+await page.goto('https://your-logged-in-app.example.com');
+const snap = await page.snapshot();
+await page.close(); // closes only the tab swiftbrowse opened — your browser keeps running
+```
+
+### Firefox (WebDriver BiDi)
+
+CDP is deprecated in Firefox, so swiftbrowse drives it over the W3C WebDriver
+BiDi protocol — a second transport over the same `ws` dependency, no extra
+download. Same `page.*` API (the ARIA snapshot is reconstructed in-page since
+BiDi has no `getFullAXTree`):
+
+```js
+const page = await connect({ engine: 'firefox' });
+```
+
+CLI: `swiftbrowse open <url> --engine firefox`. MCP: `BAREBROWSE_ENGINE=firefox`.
+Firefox cookies (plaintext) reuse into the same engine.
+
+Firefox is at practical parity with Chromium: stealth, consent auto-dismiss,
+ad/tracker blocking, JS dialogs, console/network capture, hybrid fallback,
+`saveState`, `waitForNavigation`, and download tracking all work the same way.
+Chromium (CDP) stays the default; the only remaining gap is
+`reload({ignoreCache})` (upstream BiDi limitation). With no explicit `engine`,
+`connect()` falls back to Firefox (warning once to stderr) if no Chromium
+browser is installed, and throws naming both if neither is; an explicit
+`engine` is always honored and errors on a missing binary instead of silently
+switching.
+
+### Incognito (clean session)
+
+Pass `incognito: true` for a clean, **unauthenticated** session — swiftbrowse
+skips *all* auth injection (cookies + storage state), so the agent browses
+logged out. It is not Chrome's `--incognito` flag: the session already runs in
+a throwaway profile, so this gates the *other* auth source — your real browser
+cookies. Works on both engines:
+
+```js
+const page = await connect({ incognito: true });
+```
+
+From the CLI: `swiftbrowse open <url> --incognito`. From MCP: set
+`BAREBROWSE_INCOGNITO=1`.
+
+## What it handles automatically
+
+Cookie consent walls (29 languages, with real mouse click fallback for stubborn CMPs), login walls (cookie extraction from your browsers), bot detection (challenge-phrase + node-count heuristic + stealth patches + automatic headed fallback — snapshot shows `[BOT CHALLENGE DETECTED]` warning when blocked), permission prompts, SPA navigation, JS dialogs, off-screen elements, pre-filled inputs, ARIA noise, and profile locking. The agent doesn't think about any of it.
+
+## Safe by default
+
+swiftbrowse hands an autonomous — and therefore prompt-injectable — agent an *authenticated* browser, so the defaults are calibrated for that threat:
+
+- **Local-resource schemes blocked.** `file:`, `view-source:`, `chrome:`, etc. are rejected by default (a confirmed local-file-read vector); `http`/`https`/`data` stay allowed. Override with `allowLocalUrls: true`.
+- **Cookie injection scoped** to a precise RFC-6265 domain match — browsing one site can't pull look-alike or unrelated cookies into the session.
+- **CLI daemon authenticated** with a per-session token (loopback alone isn't an authorization boundary); snapshots and saved state are written owner-only (`0600`).
+- **Opt-in hardening** for stricter deployments: `blockPrivateNetwork` (SSRF guard for loopback/RFC-1918/cloud-metadata) and `uploadDir` (confine `upload()` to one directory). Both available on the library, MCP, bareagent, and CLI (`--block-private-network`, `--upload-dir`).
+
+See `swiftbrowse.context.md` and the PRD's "Security Model & Safe Defaults" for the full rationale.
+
+## What the agent sees
+
+Raw ARIA output from a page is noisy -- decorative wrappers, hidden elements, structural junk. The pruning pipeline (ported from [mcprune](https://github.com/hamr0/mcprune)) strips it down to what matters.
 
 | Page | Raw | Pruned | Reduction |
 |------|-----|--------|-----------|
 | example.com | 377 chars | 45 chars | 88% |
 | Hacker News | 51,726 chars | 27,197 chars | 47% |
-| Wikipedia | 109,479 chars | 40,566 chars | 63% |
+| Wikipedia (article) | 109,479 chars | 40,566 chars | 63% |
 | DuckDuckGo | 42,254 chars | 5,407 chars | 87% |
 
-**Two modes:**
+Two pruning modes: **act** (default) keeps interactive elements and visible labels -- for clicking, typing, navigating. **read** keeps all text content -- for reading articles and extracting information.
 
-- **`act` (default):** Interactive elements + visible labels. For clicking, typing, navigating.
-- **`read`:** All text content + headings. For reading articles, extracting information.
+## Actions
 
----
+Everything the agent can do through swiftbrowse:
 
-## State Management
+| Action | What it does |
+|--------|-------------|
+| **Navigate** | Load a URL, wait for page load, auto-dismiss consent |
+| **Back / Forward** | Browser history navigation |
+| **Snapshot** | Pruned ARIA tree with `[ref=N]` markers. Two modes: `act` (buttons, links, inputs) and `read` (full text). 40-90% token reduction. |
+| **Readable** | Clean article text (title + body, chrome stripped — Reader-View engine). For *reading* article-like pages, not interacting. Advisory `confidence`; falls back to snapshot on non-articles. |
+| **Click** | Scroll into view + mouse click at element center, JS fallback for hidden elements |
+| **Type** | Focus + insert text, with option to clear existing content first |
+| **Press** | Special keys: Enter, Tab, Escape, Backspace, Delete, arrows, Space |
+| **Scroll** | Mouse wheel up or down (accepts direction or pixels) |
+| **Hover** | Move mouse to element center (triggers tooltips, hover states) |
+| **Select** | Set dropdown value (native select or custom dropdown) |
+| **Drag** | Drag one element to another (Kanban boards, sliders) |
+| **Upload** | Set files on a file input element |
+| **Screenshot** | Page capture as base64 PNG/JPEG/WebP |
+| **PDF** | Export page as PDF |
+| **Assess** | Privacy scan: score (0-100), risk level, 10-category breakdown. Tries headless first, falls back to headed if bot-blocked. Consent auto-dismissed before scan. Max 3 concurrent, 30s timeout, tabs cleaned up. Requires `npm install wearehere`. |
+| **Tabs** | List open tabs, switch between them |
+| **Wait for content** | Poll for text or CSS selector to appear on page |
+| **Wait for navigation** | SPA-aware: works for full page loads and pushState |
+| **Wait for network idle** | Resolve when no pending requests for 500ms |
+| **Dialog handling** | Auto-dismiss JS alert/confirm/prompt dialogs |
+| **Save state** | Export cookies + localStorage to JSON |
+| **Inject cookies** | Extract from Firefox/Chromium and inject into the session (CDP or BiDi) |
+| **Raw CDP / BiDi** | Escape hatch: `page.cdp` (Chromium) or `page.bidi` (Firefox) for any low-level command |
 
-### Save Session
+## Tested against
 
-```javascript
-const page = await connect();
-await page.goto('https://example.com/login');
-// ... authenticate ...
-await page.saveState('.swiftbrowse/session.json');
-await page.close();
-```
-
-### Restore Session
-
-```javascript
-const page = await connect({
-  storageState: '.swiftbrowse/session.json'
-});
-await page.goto('https://example.com');  // Already authenticated
-```
-
-Exports: cookies + localStorage as JSON.
-
----
-
-## API Reference: Page Handle Methods
-
-All methods are async. Error handling:
-
-```javascript
-try {
-  await page.click('nonexistent-ref');
-} catch (err) {
-  console.error(`No element found for ref "nonexistent-ref"`);
-}
-```
-
-Refs expire after navigation. Always re-snapshot after `goto()` or `waitForNavigation()`.
-
----
-
-## Tested Against
-
-Real-world sites across 8 countries, all cookie consent dialogs dismissed, all interactions working:
+16+ sites across 8 countries, all consent dialogs dismissed, all interactions working:
 
 Google, YouTube, BBC, Wikipedia, GitHub, DuckDuckGo, Hacker News, Amazon DE, The Guardian, Spiegel, Le Monde, El Pais, Corriere, NOS, Bild, Nu.nl, Booking, NYT, Stack Overflow, CNN, Reddit
 
----
-
-## Performance Notes
-
-- **Headless mode:** ~1-2s per page load + ARIA extraction. Lightweight.
-- **Headed mode:** ~1-2s + user interaction time. Visual.
-- **Hybrid mode:** Headless first, fallback adds ~500ms if bot-detected.
-- **Batch crawling:** 50-100 pages/min depending on site and network.
-- **Memory:** ~50-100MB per headless session. Headed mode shares browser memory.
-
----
-
-## Architecture
+## How it works
 
 ```
-URL → validate scheme
-    → find/launch browser (chromium.js)
-    → CDP WebSocket connection (cdp.js)
-    → stealth patches (stealth.js, headless-only)
-    → suppress permission prompts
-    → extract + inject cookies (auth.js)
-    → navigate, wait for load
-    → detect + dismiss consent dialogs (consent.js)
-    → fetch full ARIA tree (aria.js)
-    → 9-step pruning pipeline (prune.js)
-    → dispatch interaction events (interact.js)
-    → agent-ready snapshot [ref=N]
+URL -> find/launch browser (chromium.js)
+    -> WebSocket CDP connection (cdp.js)
+    -> stealth patches before page scripts (stealth.js, headless only)
+    -> suppress all permission prompts (Browser.setPermission)
+    -> extract + inject cookies from your browser (auth.js)
+    -> navigate to URL, wait for load
+    -> detect + dismiss cookie consent dialogs (consent.js)
+    -> get full ARIA accessibility tree (aria.js)
+    -> pruning pipeline from mcprune (prune.js)
+    -> dispatch real input events: click/type/scroll (interact.js)
+    -> agent-ready snapshot with [ref=N] markers
 ```
 
-11 modules, ~2,400 lines, zero dependencies.
+Firefox follows the same flow over WebDriver BiDi (`bidi.js`), with the AX tree
+reconstructed in-page (`ax-snapshot.js`) and pruning/formatting shared verbatim.
 
----
+A small set of focused modules, two small dependencies (`ws`, `@mozilla/readability`).
 
-## Error Handling
+## Requirements
 
-### URL Validation
+- Node.js >= 22 (built-in WebSocket, built-in SQLite)
+- Any Chromium-based browser installed (Chrome, Chromium, Brave, Edge, Vivaldi) — or Firefox (>= 121) for the `engine: 'firefox'` BiDi path
+- Linux tested (Fedora/KDE). macOS/Windows cookie paths exist but untested.
 
-```javascript
-await browse('file:///etc/passwd');  // throws
-await browse('javascript:alert(1)'); // throws
-await browse('example.com');         // auto-prepends https://
-```
+## The bare ecosystem
 
-Only `http://` and `https://` allowed.
+Local-first, composable agent infrastructure. Same API patterns throughout —
+mix and match, each module works standalone.
 
-### Navigation Timeout
+**Core** — the brain, the gate, the memory.
 
-```javascript
-try {
-  await page.goto('https://slow-site.example.com', 5000);  // 5s timeout
-} catch (err) {
-  console.error('Timeout:', err);
-}
-```
+- **[bareagent](https://npmjs.com/package/bare-agent)** — the think→act→observe loop. *Goal in → coordinated actions out.* Replaces LangChain, CrewAI, AutoGen.
+- **[bareguard](https://npmjs.com/package/bareguard)** — the single gate every action passes through. *Action in → allow / deny / ask-a-human out.* Replaces hand-rolled allowlists and scattered policy code.
+- **[litectx](https://npmjs.com/package/litectx)** — tree-sitter code + memory graph with activation decay, plus lightweight context engineering (write · select · compress · isolate). *Query in → ranked context out.*
 
-### Missing Elements
+**Optional reach** — give the agent hands.
 
-```javascript
-try {
-  await page.click('999');  // ref doesn't exist
-} catch (err) {
-  console.error('Element not found:', err.message);
-}
-```
+- **[swiftbrowse](https://npmjs.com/package/swiftbrowse)** — a real browser for agents. *URL in → pruned snapshot out.* Replaces Playwright, Selenium, Puppeteer.
+- **[baremobile](https://npmjs.com/package/baremobile)** — Android + iOS device control. *Screen in → pruned snapshot out.* Replaces Appium, Espresso, XCUITest.
+- **[beeperbox](https://github.com/hamr0/beeperbox)** — 50+ messaging networks via one MCP server (headless Beeper Desktop in Docker). *Chat in → unified message stream out.* Replaces Twilio, per-platform bot APIs.
 
-Always re-snapshot after navigation before clicking.
+**What you can build:**
 
----
+- **Headless automation** — scrape sites, fill forms, extract data, monitor pages on a schedule
+- **QA & testing** — automated test suites for web and Android apps without heavyweight frameworks
+- **Personal AI assistants** — chatbots that browse the web or control your phone on your behalf
+- **Remote device control** — manage Android devices over WiFi, including on-device via Termux
+- **Agentic workflows** — multi-step tasks where an AI plans, browses, and acts across web and mobile
 
-## FAQ
-
-**Q: Does swiftbrowse send data to third parties?**
-A: No. It launches a local browser and communicates via CDP. No network calls except to the URLs you visit.
-
-**Q: Can I use it with headless CI/CD?**
-A: Yes. Headless mode works on Linux (tested on Fedora). Install Chrome or Chromium, no display needed.
-
-**Q: How do I handle CAPTCHA?**
-A: Use headed mode. Interact with CAPTCHA manually, then continue with the script.
-
-**Q: Does it support JavaScript?**
-A: Yes. All pages are fully rendered. JavaScript runs server-side (in the browser process), not in Node.js.
-
-**Q: Can I use a proxy?**
-A: Yes. Pass `--proxy=socks5://localhost:1080` or similar.
-
----
+**Why this exists:** Most automation stacks ship 200MB of opinions before you write a line of code. These don't. Install, import, go.
 
 ## License
 
-MIT
-
----
-
-## Related Projects
-
-swiftbrowse is a focused browsing library. Pair it with an agent framework and you have a complete autonomous web agent.
-
-| | [**swiftbrowse**](https://npmjs.com/package/swiftbrowse) | [**baremobile**](https://npmjs.com/package/baremobile) |
-|---|---|---|
-| **Purpose** | Web browsing (URL in, snapshot out) | Mobile automation (screen in, snapshot out) |
-| **Replaces** | Playwright, Selenium, Puppeteer | Appium, Espresso, UIAutomator2 |
-| **Modes** | Library, CLI, MCP | Library, CLI, MCP |
+Apache-2.0 — see [LICENSE](LICENSE).

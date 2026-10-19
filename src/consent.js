@@ -4,151 +4,13 @@
  * Scans the page ARIA tree for consent dialogs and clicks the "accept" button.
  * Works across languages by matching common accept/agree patterns.
  * Runs once after page load — no polling, no mutation observers.
+ *
+ * The multilingual pattern sets live in consent-patterns.js (shared with the
+ * Firefox/BiDi walker in consent-firefox.js); this file owns the CDP-specific
+ * tree walk + click.
  */
 
-// Button text patterns that mean "accept all" / "I agree" across common languages.
-// Order matters: more specific patterns first to avoid false positives.
-const ACCEPT_PATTERNS = [
-  // English
-  /\baccept\s*all\b/i,
-  /\ballow\s*all\b/i,
-  /\bagree\s*to\s*all\b/i,
-  /\byes,?\s*i\s*agree\b/i,
-  /\bi\s*agree\b/i,
-  /\baccept\s*cookies?\b/i,
-  /\ballow\s*cookies?\b/i,
-  /\bgot\s*it\b/i,
-  // Dutch
-  /\balles\s*accepteren\b/i,
-  /\balles\s*toestaan\b/i,
-  /\bakkoord\b/i,
-  // German
-  /\balle\s*akzeptieren\b/i,
-  /\ballem\s*zustimmen\b/i,
-  /\balle\s*cookies?\s*akzeptieren\b/i,
-  // French
-  /\btout\s*accepter\b/i,
-  /\baccepter\s*tout\b/i,
-  /\bj['']accepte\b/i,
-  // Spanish
-  /\baceptar\s*todo\b/i,
-  /\baceptar\s*todas?\b/i,
-  // Italian
-  /\baccetta\s*tutto\b/i,
-  /\baccetto\b/i,
-  // Portuguese
-  /\baceitar\s*tudo\b/i,
-  // Russian
-  /принять\s*все/i,
-  /принять/i,
-  /согласен/i,
-  // Ukrainian
-  /прийняти\s*все/i,
-  /прийняти/i,
-  // Polish
-  /zaakceptuj\s*wszystk/i,
-  /akceptuj\s*wszystk/i,
-  /zgadzam\s*się/i,
-  // Czech
-  /přijmout\s*vše/i,
-  /souhlasím/i,
-  // Turkish
-  /tümünü\s*kabul\s*et/i,
-  /kabul\s*et/i,
-  /kabul\s*ediyorum/i,
-  // Romanian
-  /acceptă\s*tot/i,
-  /accept\s*toate/i,
-  // Hungarian
-  /összes\s*elfogadás/i,
-  /elfogad/i,
-  // Greek
-  /αποδοχή\s*όλων/i,
-  /αποδέχομαι/i,
-  // Swedish
-  /acceptera\s*alla/i,
-  /godkänn\s*alla/i,
-  // Danish
-  /accepter\s*alle/i,
-  /acceptér\s*alle/i,
-  // Norwegian
-  /godta\s*alle/i,
-  /aksepter\s*alle/i,
-  // Finnish
-  /hyväksy\s*kaikki/i,
-  /hyväksyn/i,
-  // Arabic
-  /قبول\s*الكل/,
-  /قبول\s*الجميع/,
-  /موافق/,
-  /قبول/,
-  // Persian
-  /پذیرش\s*همه/,
-  /موافقم/,
-  /پذیرش/,
-  // Chinese (Simplified + Traditional)
-  /全部接受/,
-  /接受所有/,
-  /接受全部/,
-  /同意并继续/,
-  /全部接受/,
-  /接受/,
-  /同意/,
-  // Japanese
-  /すべて受け入れ/,
-  /すべて許可/,
-  /同意する/,
-  /同意します/,
-  // Korean
-  /모두\s*수락/,
-  /모두\s*동의/,
-  /동의합니다/,
-  /수락/,
-  // Vietnamese
-  /chấp\s*nhận\s*tất\s*cả/i,
-  /đồng\s*ý\s*tất\s*cả/i,
-  /đồng\s*ý/i,
-  // Thai
-  /ยอมรับทั้งหมด/,
-  /ยอมรับ/,
-  // Hindi
-  /सभी\s*स्वीकार/,
-  /स्वीकार\s*करें/,
-  /सहमत/,
-  // Indonesian / Malay
-  /terima\s*semua/i,
-  /setuju/i,
-  // Generic single-word fallbacks (only matched inside dialogs)
-  /^accept$/i,
-  /^agree$/i,
-  /^ok$/i,
-];
-
-// Roles that indicate a consent dialog container.
-const DIALOG_ROLES = new Set(['dialog', 'alertdialog']);
-
-// Text patterns in dialog names/headings that confirm it's about consent.
-const CONSENT_DIALOG_HINTS = [
-  /cookie/i,
-  /consent/i,
-  /privacy/i,
-  /before\s*you\s*continue/i,
-  /voordat\s*je\s*verdergaat/i,  // Dutch
-  /bevor\s*du\s*fortf/i,         // German
-  /avant\s*de\s*continuer/i,     // French
-  /antes\s*de\s*continuar/i,     // Spanish / Portuguese
-  /prima\s*di\s*continuare/i,    // Italian
-  /zanim\s*przejdziesz/i,        // Polish
-  /прежде\s*чем\s*продолжить/i,  // Russian
-  /devam\s*etmeden\s*önce/i,     // Turkish
-  /続行する前に/,                  // Japanese
-  /继续前/,                        // Chinese Simplified
-  /繼續前/,                        // Chinese Traditional
-  /계속하기\s*전에/,                // Korean
-  /trước\s*khi\s*tiếp\s*tục/i,   // Vietnamese
-  /ملفات\s*تعريف\s*الارتباط/,    // Arabic: cookies
-  /คุกกี้/,                        // Thai: cookies
-];
+import { ACCEPT_PATTERNS, DIALOG_ROLES, CONSENT_DIALOG_HINTS } from './consent-patterns.js';
 
 /**
  * Click a node via JavaScript .click() instead of mouse events.
@@ -160,6 +22,20 @@ async function jsClick(session, backendNodeId) {
     objectId: object.objectId,
     functionDeclaration: 'function() { this.click(); }',
   });
+}
+
+/**
+ * Click a node via real mouse events (scrollIntoView → getBoxModel → mousePressed/Released).
+ * Some CMPs ignore synthetic .click() and only respond to real Input events.
+ */
+async function realClick(session, backendNodeId) {
+  await session.send('DOM.scrollIntoViewIfNeeded', { backendNodeId });
+  const { model } = await session.send('DOM.getBoxModel', { backendNodeId });
+  const [x1, y1, x2, y2, x3, y3, x4, y4] = model.content;
+  const cx = (x1 + x3) / 2;
+  const cy = (y1 + y3) / 2;
+  await session.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1 });
+  await session.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1 });
 }
 
 /**
@@ -212,8 +88,19 @@ export async function dismissConsent(session) {
     const button = findAcceptButton(dialogId, nodes, nodeMap, parentMap);
     if (button?.backendDOMNodeId) {
       try {
+        // Try jsClick first (bypasses iframe overlays)
         await jsClick(session, button.backendDOMNodeId);
         await new Promise((r) => setTimeout(r, 1000));
+        // Check if consent actually dismissed — some CMPs ignore synthetic clicks
+        const { nodes: nodesAfter } = await session.send('Accessibility.getFullAXTree');
+        const stillThere = nodesAfter.some((n) =>
+          n.role?.value === 'button' && n.name?.value === button.name?.value
+        );
+        if (stillThere) {
+          // Retry with real mouse event
+          await realClick(session, button.backendDOMNodeId);
+          await new Promise((r) => setTimeout(r, 1000));
+        }
         return true;
       } catch {
         // Click failed — try next dialog
@@ -264,24 +151,33 @@ function findAcceptButton(dialogId, nodes, nodeMap, parentMap) {
  * Only matches strong patterns (not single-word fallbacks) to avoid false positives.
  */
 function tryGlobalConsentButton(nodes, session) {
-  // Only use the specific multi-word patterns for global search
-  const strictPatterns = ACCEPT_PATTERNS.filter((p) => {
-    const src = p.source;
-    return src.includes('\\s') || src.includes('\\b.*\\b.*\\b');
-  });
-
-  // Actually, let's just use all non-single-word patterns
-  const safePatterns = ACCEPT_PATTERNS.slice(0, -3); // exclude ^accept$, ^agree$, ^ok$
+  // Multi-word patterns only — exclude the bare ^accept$/^agree$/^ok$ from
+  // ACCEPT_PATTERNS so we don't false-match unrelated buttons page-wide.
+  const safePatterns = ACCEPT_PATTERNS.slice(0, -3);
 
   for (const pattern of safePatterns) {
     for (const node of nodes) {
       if (node.role?.value !== 'button') continue;
       const name = node.name?.value || '';
       if (name && pattern.test(name) && node.backendDOMNodeId) {
-        return jsClick(session, node.backendDOMNodeId)
-          .then(() => new Promise((r) => setTimeout(r, 1000)))
-          .then(() => true)
-          .catch(() => false);
+        return (async () => {
+          try {
+            await jsClick(session, node.backendDOMNodeId);
+            await new Promise((r) => setTimeout(r, 1000));
+            // Check if button still exists — retry with real click if so
+            const { nodes: nodesAfter } = await session.send('Accessibility.getFullAXTree');
+            const stillThere = nodesAfter.some((n) =>
+              n.role?.value === 'button' && n.name?.value === name
+            );
+            if (stillThere) {
+              await realClick(session, node.backendDOMNodeId);
+              await new Promise((r) => setTimeout(r, 1000));
+            }
+            return true;
+          } catch {
+            return false;
+          }
+        })();
       }
     }
   }
