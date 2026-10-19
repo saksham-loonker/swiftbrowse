@@ -1,6 +1,6 @@
 # SwiftBrowse 0.24 migration
 
-This release integrates BareBrowse through `25f058214151b6d80f93c0724a533100949ee544` (v0.23.0). All 144 upstream commits are ancestors of the merge. The nested source checkout is removed after validation.
+This release integrates BareBrowse through `25f058214151b6d80f93c0724a533100949ee544` (v0.23.0). All 144 upstream commits are ancestors of the merge. The nested source checkout is excluded from the project and package; the integrated code needs no checkout of BareBrowse.
 
 | Source | Integrated features |
 | --- | --- |
