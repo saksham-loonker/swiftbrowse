@@ -116,7 +116,7 @@ describe('launch()', { skip: browserSkip }, () => {
       assert.ok(existsSync(userDir), 'user-supplied dir must survive cleanup');
       // Test cleanup
       const { rmSync } = await import('node:fs');
-      rmSync(userDir, { recursive: true, force: true });
+      rmSync(userDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });
