@@ -596,7 +596,8 @@ describe('connect({ engine: firefox }) — saveState (Phase 4)', { skip: !hasFir
       assert.equal(c.sameSite, 'Lax', 'sameSite capitalized for CDP setCookies');
       assert.equal(state.localStorage.token, 'xyz', 'localStorage captured');
       // Owner-only — it holds session tokens (security invariant).
-      assert.equal(statSync(file).mode & 0o777, 0o600, 'state file is 0600');
+      // Windows ACLs govern access; POSIX mode bits are meaningful on Unix only.
+      if (process.platform !== 'win32') assert.equal(statSync(file).mode & 0o777, 0o600, 'state file is 0600');
     } finally {
       await page.close();
     }

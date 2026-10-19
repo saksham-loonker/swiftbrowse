@@ -22,7 +22,7 @@ const ps = processList;
 let hasFirefox = true;
 try { findFirefox(); } catch { hasFirefox = false; }
 
-// chromium.js hardcodes its profile dir to /tmp/swiftbrowse-<pid>-<ts>.
+// Chromium records its owned profile under the platform temp directory.
 const profilePrefix = `swiftbrowse-${process.pid}-`;
 const chromiumProfile = join(tmpdir(), profilePrefix).replace(/\\/g, '/');
 
@@ -49,7 +49,10 @@ async function killedBrowserCloses(opts, isMain) {
 
     await sleep(300);
     assert.deepEqual([...using(tmp), ...using(chromiumProfile)], [], 'no processes left using the profile');
-    assert.deepEqual([...readdirSync(tmp).filter((d) => !d.startsWith('org.chromium.')), ...readdirSync(tmpdir()).filter((d) => d.startsWith(profilePrefix))], [], 'no temp profile/download dirs left');
+    // Chromium and Google Chrome use different names for their own scratch
+    // directories. Neither is a SwiftBrowse-owned profile/download directory.
+    const browserScratch = /^(?:org\.chromium\.|com\.google\.Chrome\.)/;
+    assert.deepEqual([...readdirSync(tmp).filter(d => !browserScratch.test(d)), ...readdirSync(tmpdir()).filter((d) => d.startsWith(profilePrefix))], [], 'no temp profile/download dirs left');
   } finally {
     for (const r of [...using(tmp), ...using(chromiumProfile)]) { try { process.kill(r.pid, 'SIGKILL'); } catch {} }
     if (prev === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = prev;
